@@ -1,0 +1,31 @@
+# Full 3-signature chain: DEV → STAGING → PROD (all from Jenkins OIDC)
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-multi-signature-chain
+  annotations:
+    description: "Requires 3 signatures: develop, main, and release branch"
+spec:
+  images:
+    - glob: "registry-quay-quay.__CLUSTER_DOMAIN__/secure-app/**:prod-*"
+    - glob: "registry-quay-quay.__CLUSTER_DOMAIN__/secure-app/**:v*"
+  authorities:
+    # Signature #1: DEV (develop branch)
+    - keyless:
+        identities:
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*/job/secure-app/job/develop/?"
+        trustRootRef: rhtas-trust
+    # Signature #2: STAGING (main branch)
+    - keyless:
+        identities:
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*/job/secure-app/job/main/?"
+        trustRootRef: rhtas-trust
+    # Signature #3: PROD (release branch)
+    - keyless:
+        identities:
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*/job/secure-app/job/release.*/?"
+        trustRootRef: rhtas-trust
+  mode: enforce

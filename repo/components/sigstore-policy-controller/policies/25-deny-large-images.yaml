@@ -1,0 +1,111 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# SECURITY POLICY: Image Size and Layer Limits
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Block oversized images that may indicate supply chain compromise
+# Mode: warn (requires image metadata attestation)
+# Priority: 25
+#
+# Why size limits matter for security:
+# - Unusually large images may contain hidden malware
+# - Bloated images increase attack surface
+# - Large images slow deployment and waste resources
+# - Excessive layers indicate poor build hygiene
+#
+# Size thresholds:
+# - Backend services: Max 500MB (Node.js/Java typically < 300MB)
+# - Frontend services: Max 100MB (Nginx + static files)
+# - Minimal images: Max 50MB (distroless, scratch)
+#
+# Layer thresholds:
+# - Maximum layers: 20 (indicates clean multi-stage build)
+# - Warning at: 15 layers
+#
+# Red flags detected:
+# - Image > 1GB without justification
+# - Sudden size increase > 100% from previous build
+# - Layer count > 30
+# - Single layer > 500MB
+#
+# Pipeline integration:
+#   # Get image manifest and calculate size
+#   MANIFEST=$(skopeo inspect docker://${IMAGE})
+#   
+#   echo "{
+#     \"totalSize\": $(echo $MANIFEST | jq '.LayersData | map(.Size) | add'),
+#     \"layerCount\": $(echo $MANIFEST | jq '.LayersData | length'),
+#     \"largestLayer\": $(echo $MANIFEST | jq '[.LayersData[].Size] | max'),
+#     \"created\": $(echo $MANIFEST | jq '.Created'),
+#     \"threshold\": {\"maxSizeMB\": 500, \"maxLayers\": 20}
+#   }" > image-size.json
+#   
+#   cosign attest --type https://example.com/image-size/v1 --predicate image-size.json ${IMAGE}
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: deny-large-images
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: security
+  annotations:
+    description: "Block oversized images that may indicate compromise"
+    category: "security-size"
+    priority: "25"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: image-size
+          predicateType: https://example.com/image-size/v1
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://example.com/image-size/v1"
+              
+              // Size in bytes
+              #MB: 1024 * 1024
+              #maxSizeBytes: 500 * #MB  // 500MB default max
+              #maxLayers: 20
+              #maxLayerBytes: 300 * #MB // 300MB max single layer
+              
+              predicate: {
+                totalSize: number
+                layerCount: number
+                largestLayer?: number
+                created?: string
+                
+                threshold?: {
+                  maxSizeMB?: number
+                  maxLayers?: number
+                }
+                
+                // Check total size
+                if totalSize > #maxSizeBytes {
+                  _fail: "Image size \(totalSize / #MB)MB exceeds \(#maxSizeBytes / #MB)MB limit"
+                }
+                
+                // Check layer count
+                if layerCount > #maxLayers {
+                  _fail: "Image has \(layerCount) layers, exceeds \(#maxLayers) limit"
+                }
+                
+                // Check largest layer
+                if largestLayer != _|_ && largestLayer > #maxLayerBytes {
+                  _fail: "Largest layer \(largestLayer / #MB)MB exceeds limit"
+                }
+              }
+  mode: warn
+
+

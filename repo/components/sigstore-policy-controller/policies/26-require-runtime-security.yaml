@@ -1,0 +1,129 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# SECURITY POLICY: Runtime Security Profile Attestation
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Require runtime security profile (Seccomp/AppArmor) attestation
+# Mode: warn (requires security profile analysis)
+# Priority: 26
+#
+# Runtime security profiles restrict:
+# - System calls the container can make
+# - Kernel capabilities available
+# - File system access patterns
+# - Network operations
+#
+# Security profiles supported:
+# - Seccomp: Restrict syscalls at kernel level
+# - AppArmor: MAC (Mandatory Access Control) profiles
+# - SELinux: Security-Enhanced Linux contexts
+#
+# Profile levels:
+# - runtime/default: Kubernetes default Seccomp profile
+# - custom: Application-specific restricted profile
+# - unconfined: No restrictions (NOT ALLOWED in production)
+#
+# Benefits:
+# - Reduces container escape risk
+# - Limits blast radius of compromise
+# - Meets CIS Kubernetes benchmarks
+# - Compliance with security frameworks
+#
+# Pipeline integration:
+#   # Analyze container security requirements
+#   # (Using oci-seccomp-bpf-hook or similar during test run)
+#   
+#   echo "{
+#     \"seccompProfile\": \"runtime/default\",
+#     \"appArmorProfile\": \"runtime/default\",
+#     \"capabilities\": {
+#       \"drop\": [\"ALL\"],
+#       \"add\": [\"NET_BIND_SERVICE\"]
+#     },
+#     \"runAsNonRoot\": true,
+#     \"readOnlyRootFilesystem\": true,
+#     \"allowPrivilegeEscalation\": false
+#   }" > runtime-security.json
+#   
+#   cosign attest --type https://example.com/runtime-security/v1 --predicate runtime-security.json ${IMAGE}
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-runtime-security
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: security
+  annotations:
+    description: "Require runtime security profile attestation"
+    category: "security-runtime"
+    priority: "26"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: runtime-security
+          predicateType: https://example.com/runtime-security/v1
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://example.com/runtime-security/v1"
+              
+              // Allowed Seccomp profiles
+              #allowedSeccompProfiles: ["runtime/default", "localhost/*"]
+              
+              // Dangerous capabilities that should be dropped
+              #dangerousCapabilities: ["SYS_ADMIN", "SYS_PTRACE", "SYS_MODULE", "DAC_READ_SEARCH", "NET_ADMIN", "NET_RAW"]
+              
+              predicate: {
+                seccompProfile: string
+                appArmorProfile?: string
+                
+                capabilities?: {
+                  drop?: [...string]
+                  add?: [...string]
+                }
+                
+                runAsNonRoot: bool
+                readOnlyRootFilesystem?: bool
+                allowPrivilegeEscalation: bool
+                
+                // Must not be unconfined
+                if seccompProfile == "unconfined" {
+                  _fail: "Seccomp profile 'unconfined' not allowed"
+                }
+                
+                // Must run as non-root
+                if !runAsNonRoot {
+                  _fail: "Container must run as non-root user"
+                }
+                
+                // Must not allow privilege escalation
+                if allowPrivilegeEscalation {
+                  _fail: "Privilege escalation must be disabled"
+                }
+                
+                // Check for dangerous capabilities
+                if capabilities.add != _|_ {
+                  for cap in capabilities.add {
+                    for dangerous in #dangerousCapabilities {
+                      if cap == dangerous {
+                        _fail: "Dangerous capability '\(cap)' not allowed"
+                      }
+                    }
+                  }
+                }
+              }
+  mode: warn
+
+

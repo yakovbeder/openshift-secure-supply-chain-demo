@@ -1,0 +1,15 @@
+apiVersion: pfe.rhpds.com/v1
+kind: Gitea
+metadata:
+  name: gitea
+  namespace: gitea-system
+spec:
+  giteaSsl: true
+  giteaHostname: gitea.__CLUSTER_DOMAIN__
+  giteaAdminUser: admin
+  giteaAdminPassword: openshift
+  giteaAdminEmail: gitea@demo.local
+  giteaCreateUsers: false
+  giteaDisableRegistration: false
+  giteaWebhookSkipTlsVerify: true
+  giteaWebhookAllowedHostList: "*"

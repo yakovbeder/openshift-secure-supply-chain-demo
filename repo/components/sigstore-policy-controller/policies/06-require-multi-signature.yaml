@@ -1,0 +1,25 @@
+# Progressive signature chain: prod images need signatures from dev AND staging/prod pipelines
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-multi-signature
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: multi-signature
+  annotations:
+    description: "Prod images require signatures from dev + staging/prod pipelines"
+spec:
+  images:
+    - glob: "registry-quay-quay.__CLUSTER_DOMAIN__/secure-app/**:prod-*"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*/job/secure-app/job/develop/?"
+        trustRootRef: rhtas-trust
+    - keyless:
+        identities:
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*/job/secure-app/job/(main|release.*)/?"
+        trustRootRef: rhtas-trust
+  mode: enforce

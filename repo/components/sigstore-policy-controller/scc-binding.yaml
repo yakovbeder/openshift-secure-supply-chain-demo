@@ -1,0 +1,17 @@
+# OpenShift: grant anyuid SCC to policy-controller service account.
+# Required because the Sigstore policy-controller runs as user 1000, outside default SCC range.
+# (RBAC for the controller is consolidated here; no separate policy-controller-rbac component.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: policy-controller-anyuid
+  labels:
+    app.kubernetes.io/part-of: sigstore-policy-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:anyuid
+subjects:
+  - kind: ServiceAccount
+    name: policy-controller-webhook
+    namespace: policy-controller-operator

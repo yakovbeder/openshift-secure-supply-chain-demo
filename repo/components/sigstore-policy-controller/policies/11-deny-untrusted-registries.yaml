@@ -1,0 +1,51 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# DENY LIST POLICY: Block Untrusted Registries
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Block images from untrusted public registries
+# Mode: warn (change to enforce for strict environments)
+# Priority: 5
+#
+# Blocked registries:
+# - docker.io/library/*  - Public Docker Hub official images
+# - ghcr.io/*            - GitHub Container Registry (public)
+# - gcr.io/*             - Google Container Registry (public)
+#
+# These are blocked because:
+# - Unknown provenance and build process
+# - May contain malware or cryptominers
+# - No organizational control over updates
+# - Supply chain attacks are common
+#
+# Allowed registries:
+# - Internal OpenShift registry
+# - registry.redhat.io (Red Hat official)
+# - Approved enterprise registries
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: deny-untrusted-registries
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: deny-list
+  annotations:
+    description: "Block images from untrusted public registries"
+    category: "deny-list-registries"
+    priority: "5"
+spec:
+  images:
+    - glob: "docker.io/library/*"
+    - glob: "docker.io/library/**"
+    - glob: "index.docker.io/library/*"
+    - glob: "index.docker.io/library/**"
+    - glob: "ghcr.io/*"
+    - glob: "ghcr.io/**"
+    - glob: "gcr.io/*"
+    - glob: "gcr.io/**"
+  authorities:
+    - static:
+        action: fail
+  mode: enforce

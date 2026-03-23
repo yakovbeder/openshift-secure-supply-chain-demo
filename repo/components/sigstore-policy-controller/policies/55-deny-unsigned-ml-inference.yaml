@@ -1,0 +1,38 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# ML POLICY: Deny Unsigned Inference Services
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Block deployment of unsigned images in ML namespaces
+# Mode: enforce
+# Priority: 55
+#
+# Catch-all for ml-model-* namespaces — no unsigned images allowed.
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: deny-unsigned-ml-inference
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: ml-enforcement
+  annotations:
+    description: "Block unsigned images in ML model namespaces"
+    category: "ml-enforcement"
+    priority: "55"
+spec:
+  images:
+    - glob: "default-route-openshift-image-registry.*/ml-model-*/**"
+    - glob: "image-registry.openshift-image-registry.svc:5000/ml-model-*/**"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: "https://kubernetes.default.svc"
+            subjectRegExp: "system:serviceaccount:.*"
+          - issuer: "https://gitlab.__CLUSTER_DOMAIN__"
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+  mode: enforce

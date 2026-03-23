@@ -1,0 +1,44 @@
+###############################################################################
+#                    TEST POD - UNSIGNED IMAGE                                #
+#                                                                             #
+#  This pod uses an unsigned image and should be BLOCKED by the policy.      #
+#  Use this to test that the signature verification is working.              #
+###############################################################################
+
+# This should FAIL when applied to secure-app-dev namespace
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-unsigned-image
+  namespace: secure-app-dev
+  labels:
+    app: test-unsigned
+    purpose: policy-test
+  annotations:
+    description: "This pod should be BLOCKED because the image is not signed"
+spec:
+  containers:
+    - name: nginx
+      image: docker.io/library/nginx:latest
+      ports:
+        - containerPort: 80
+  restartPolicy: Never
+---
+# Test with a random unsigned image
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-malicious-image
+  namespace: secure-app-production
+  labels:
+    app: test-malicious
+    purpose: policy-test
+  annotations:
+    description: "This pod simulates a malicious unsigned image - should be BLOCKED"
+spec:
+  containers:
+    - name: unknown
+      image: docker.io/malicious/image:latest
+      command: ["sleep", "3600"]
+  restartPolicy: Never
+

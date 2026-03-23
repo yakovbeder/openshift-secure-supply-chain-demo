@@ -1,0 +1,291 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: secure-app-prod-push
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[push]"
+    pipelinesascode.tekton.dev/on-target-branch: "[release/*]"
+    pipelinesascode.tekton.dev/max-keep-runs: "10"
+  labels:
+    app.kubernetes.io/part-of: secure-app
+    environment: production
+spec:
+  params:
+    - name: GIT_REPO
+      value: "{{ repo_url }}"
+    - name: GIT_REVISION
+      value: "{{ revision }}"
+    - name: IMAGE_TAG
+      value: "{{ revision }}"
+    - name: REGISTRY
+      value: "image-registry.openshift-image-registry.svc:5000"
+    - name: DEV_NAMESPACE
+      value: "secure-app-dev"
+    - name: NAMESPACE
+      value: "secure-app-prod"
+
+  pipelineSpec:
+    params:
+      - name: GIT_REPO
+        type: string
+      - name: GIT_REVISION
+        type: string
+      - name: IMAGE_TAG
+        type: string
+      - name: REGISTRY
+        type: string
+      - name: DEV_NAMESPACE
+        type: string
+      - name: NAMESPACE
+        type: string
+
+    workspaces:
+      - name: source
+      - name: artifacts
+      - name: dockerconfig
+
+    tasks:
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 1: VERIFY PROGRESSIVE CHAIN (DEV + STAGING)
+      # ══════════════════════════════════════════════════════════════
+      - name: verify-backend-chain
+        taskRef:
+          name: verify-multi-sig
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: REQUIRED_SIGNATURES
+            value: "2"
+          - name: ENVIRONMENT_NAME
+            value: "PRE-PROD-GATE"
+
+      - name: verify-frontend-chain
+        taskRef:
+          name: verify-multi-sig
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/frontend:$(params.IMAGE_TAG)"
+          - name: REQUIRED_SIGNATURES
+            value: "2"
+          - name: ENVIRONMENT_NAME
+            value: "PRE-PROD-GATE"
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 2: SIGN (Signature #3 — PRODUCTION)
+      # ══════════════════════════════════════════════════════════════
+      - name: sign-backend-prod
+        runAfter: [verify-backend-chain]
+        taskRef:
+          name: sign-rhtas
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: COMPONENT
+            value: "backend"
+          - name: ENVIRONMENT
+            value: "prod"
+          - name: SIGNATURE_NUMBER
+            value: "3"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      - name: sign-frontend-prod
+        runAfter: [verify-frontend-chain]
+        taskRef:
+          name: sign-rhtas
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/frontend:$(params.IMAGE_TAG)"
+          - name: COMPONENT
+            value: "frontend"
+          - name: ENVIRONMENT
+            value: "prod"
+          - name: SIGNATURE_NUMBER
+            value: "3"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 3: VERIFY FULL CHAIN (3 signatures)
+      # ══════════════════════════════════════════════════════════════
+      - name: verify-backend-full-chain
+        runAfter: [sign-backend-prod]
+        taskRef:
+          name: verify-multi-sig
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: REQUIRED_SIGNATURES
+            value: "3"
+          - name: ENVIRONMENT_NAME
+            value: "PRODUCTION"
+
+      - name: verify-frontend-full-chain
+        runAfter: [sign-frontend-prod]
+        taskRef:
+          name: verify-multi-sig
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/frontend:$(params.IMAGE_TAG)"
+          - name: REQUIRED_SIGNATURES
+            value: "3"
+          - name: ENVIRONMENT_NAME
+            value: "PRODUCTION"
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 4: REKOR AUDIT TRAIL
+      # ══════════════════════════════════════════════════════════════
+      - name: rekor-audit-backend
+        runAfter: [verify-backend-full-chain]
+        taskRef:
+          name: rekor-search
+          kind: ClusterTask
+        params:
+          - name: ARTIFACT
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: ARTIFACT_TYPE
+            value: "image"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+
+      - name: rekor-audit-frontend
+        runAfter: [verify-frontend-full-chain]
+        taskRef:
+          name: rekor-search
+          kind: ClusterTask
+        params:
+          - name: ARTIFACT
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/frontend:$(params.IMAGE_TAG)"
+          - name: ARTIFACT_TYPE
+            value: "image"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 5: DEPLOY PRODUCTION + SMOKE TEST
+      # ══════════════════════════════════════════════════════════════
+      - name: git-clone
+        runAfter: [rekor-audit-backend, rekor-audit-frontend]
+        taskRef:
+          name: git-clone
+          kind: ClusterTask
+        params:
+          - name: url
+            value: $(params.GIT_REPO)
+          - name: revision
+            value: $(params.GIT_REVISION)
+        workspaces:
+          - name: output
+            workspace: source
+
+      - name: deploy-backend
+        runAfter: [git-clone]
+        taskRef:
+          name: deploy-openshift
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "backend"
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+          - name: REPLICAS
+            value: "3"
+        workspaces:
+          - name: source
+            workspace: source
+
+      - name: deploy-frontend
+        runAfter: [git-clone]
+        taskRef:
+          name: deploy-openshift
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "frontend"
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/frontend:$(params.IMAGE_TAG)"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+          - name: REPLICAS
+            value: "3"
+        workspaces:
+          - name: source
+            workspace: source
+
+      - name: smoke-test-backend
+        runAfter: [deploy-backend]
+        taskRef:
+          name: smoke-test
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "backend"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+          - name: MAX_RETRIES
+            value: "15"
+
+      - name: smoke-test-frontend
+        runAfter: [deploy-frontend]
+        taskRef:
+          name: smoke-test
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "frontend"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+          - name: MAX_RETRIES
+            value: "15"
+
+    finally:
+      - name: report-status
+        taskSpec:
+          steps:
+            - name: report
+              image: registry.redhat.io/ubi9/ubi-minimal:latest
+              script: |
+                #!/bin/bash
+                echo "════════════════════════════════════════════════════"
+                echo "  PRODUCTION PIPELINE — push to release/*"
+                echo "  Commit : $(params.GIT_REVISION)"
+                echo "  Status : $(tasks.status)"
+                echo "  Sig #3 (PROD) created — full chain: DEV→STAGING→PROD"
+                echo "  Rekor audit trail recorded for compliance"
+                echo "════════════════════════════════════════════════════"
+
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi
+    - name: artifacts
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 512Mi
+    - name: dockerconfig
+      secret:
+        secretName: registry-credentials
+        optional: true

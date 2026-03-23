@@ -1,0 +1,411 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: secure-app-dev-push
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[push]"
+    pipelinesascode.tekton.dev/on-target-branch: "[develop]"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+  labels:
+    app.kubernetes.io/part-of: secure-app
+    environment: dev
+spec:
+  params:
+    - name: GIT_REPO
+      value: "{{ repo_url }}"
+    - name: GIT_REVISION
+      value: "{{ revision }}"
+    - name: IMAGE_TAG
+      value: "{{ revision }}"
+    - name: REGISTRY
+      value: "image-registry.openshift-image-registry.svc:5000"
+    - name: NAMESPACE
+      value: "secure-app-dev"
+
+  pipelineSpec:
+    params:
+      - name: GIT_REPO
+        type: string
+      - name: GIT_REVISION
+        type: string
+      - name: IMAGE_TAG
+        type: string
+      - name: REGISTRY
+        type: string
+      - name: NAMESPACE
+        type: string
+
+    workspaces:
+      - name: source
+      - name: artifacts
+      - name: dockerconfig
+
+    tasks:
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 1: SOURCE
+      # ══════════════════════════════════════════════════════════════
+      - name: git-clone
+        taskRef:
+          name: git-clone
+          kind: ClusterTask
+        params:
+          - name: url
+            value: $(params.GIT_REPO)
+          - name: revision
+            value: $(params.GIT_REVISION)
+          - name: deleteExisting
+            value: "true"
+        workspaces:
+          - name: output
+            workspace: source
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 2: CODE QUALITY
+      # ══════════════════════════════════════════════════════════════
+      - name: lint-and-test
+        runAfter: [git-clone]
+        taskRef:
+          name: lint-test
+        params:
+          - name: COMPONENT
+            value: "all"
+        workspaces:
+          - name: source
+            workspace: source
+
+      - name: kube-lint
+        runAfter: [git-clone]
+        taskRef:
+          name: kube-linter
+          kind: ClusterTask
+        params:
+          - name: MANIFESTS_PATH
+            value: "k8s"
+          - name: FAIL_ON_ERROR
+            value: "false"
+        workspaces:
+          - name: source
+            workspace: source
+          - name: artifacts
+            workspace: artifacts
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 3: BUILD
+      # ══════════════════════════════════════════════════════════════
+      - name: build-backend
+        runAfter: [lint-and-test]
+        taskRef:
+          name: build-image
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "backend"
+          - name: CONTEXT
+            value: "backend"
+          - name: DOCKERFILE
+            value: "backend/Dockerfile"
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.NAMESPACE)/backend"
+          - name: IMAGE_TAG
+            value: "$(params.IMAGE_TAG)"
+        workspaces:
+          - name: source
+            workspace: source
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      - name: build-frontend
+        runAfter: [lint-and-test]
+        taskRef:
+          name: build-image
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "frontend"
+          - name: CONTEXT
+            value: "frontend"
+          - name: DOCKERFILE
+            value: "frontend/Dockerfile"
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.NAMESPACE)/frontend"
+          - name: IMAGE_TAG
+            value: "$(params.IMAGE_TAG)"
+        workspaces:
+          - name: source
+            workspace: source
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 4: SUPPLY CHAIN SECURITY
+      # ══════════════════════════════════════════════════════════════
+      - name: sbom-backend
+        runAfter: [build-backend]
+        taskRef:
+          name: sbom-generate
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(tasks.build-backend.results.IMAGE_URL)"
+          - name: COMPONENT
+            value: "backend"
+          - name: ENVIRONMENT
+            value: "dev"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      - name: sbom-frontend
+        runAfter: [build-frontend]
+        taskRef:
+          name: sbom-generate
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(tasks.build-frontend.results.IMAGE_URL)"
+          - name: COMPONENT
+            value: "frontend"
+          - name: ENVIRONMENT
+            value: "dev"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      - name: vuln-scan-backend
+        runAfter: [build-backend]
+        taskRef:
+          name: vuln-scan
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(tasks.build-backend.results.IMAGE_URL)"
+          - name: COMPONENT
+            value: "backend"
+          - name: ENVIRONMENT
+            value: "dev"
+          - name: FAIL_ON_CRITICAL
+            value: "false"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      - name: vuln-scan-frontend
+        runAfter: [build-frontend]
+        taskRef:
+          name: vuln-scan
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(tasks.build-frontend.results.IMAGE_URL)"
+          - name: COMPONENT
+            value: "frontend"
+          - name: ENVIRONMENT
+            value: "dev"
+          - name: FAIL_ON_CRITICAL
+            value: "false"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      - name: acs-check-backend
+        runAfter: [build-backend]
+        taskRef:
+          name: stackrox-image-check
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(tasks.build-backend.results.IMAGE_URL)"
+
+      - name: acs-check-frontend
+        runAfter: [build-frontend]
+        taskRef:
+          name: stackrox-image-check
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(tasks.build-frontend.results.IMAGE_URL)"
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 5: SIGN (Signature #1 — DEV)
+      # ══════════════════════════════════════════════════════════════
+      - name: sign-backend
+        runAfter: [sbom-backend, vuln-scan-backend, acs-check-backend]
+        taskRef:
+          name: sign-rhtas
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(tasks.build-backend.results.IMAGE_URL)"
+          - name: COMPONENT
+            value: "backend"
+          - name: ENVIRONMENT
+            value: "dev"
+          - name: SIGNATURE_NUMBER
+            value: "1"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      - name: sign-frontend
+        runAfter: [sbom-frontend, vuln-scan-frontend, acs-check-frontend]
+        taskRef:
+          name: sign-rhtas
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(tasks.build-frontend.results.IMAGE_URL)"
+          - name: COMPONENT
+            value: "frontend"
+          - name: ENVIRONMENT
+            value: "dev"
+          - name: SIGNATURE_NUMBER
+            value: "1"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 6: VERIFY
+      # ══════════════════════════════════════════════════════════════
+      - name: verify-backend
+        runAfter: [sign-backend]
+        taskRef:
+          name: verify-signature
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(tasks.build-backend.results.IMAGE_URL)"
+          - name: REQUIRED_IDENTITY
+            value: "system:serviceaccount:$(params.NAMESPACE):pipeline"
+          - name: ENVIRONMENT_NAME
+            value: "DEV"
+
+      - name: verify-frontend
+        runAfter: [sign-frontend]
+        taskRef:
+          name: verify-signature
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(tasks.build-frontend.results.IMAGE_URL)"
+          - name: REQUIRED_IDENTITY
+            value: "system:serviceaccount:$(params.NAMESPACE):pipeline"
+          - name: ENVIRONMENT_NAME
+            value: "DEV"
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 7: DEPLOY + SMOKE TEST
+      # ══════════════════════════════════════════════════════════════
+      - name: deploy-backend
+        runAfter: [verify-backend]
+        taskRef:
+          name: deploy-openshift
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "backend"
+          - name: IMAGE
+            value: "$(tasks.build-backend.results.IMAGE_URL)"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+          - name: REPLICAS
+            value: "1"
+        workspaces:
+          - name: source
+            workspace: source
+
+      - name: deploy-frontend
+        runAfter: [verify-frontend]
+        taskRef:
+          name: deploy-openshift
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "frontend"
+          - name: IMAGE
+            value: "$(tasks.build-frontend.results.IMAGE_URL)"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+          - name: REPLICAS
+            value: "1"
+        workspaces:
+          - name: source
+            workspace: source
+
+      - name: smoke-test-backend
+        runAfter: [deploy-backend]
+        taskRef:
+          name: smoke-test
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "backend"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+          - name: EXPECTED_STATUS
+            value: "200"
+          - name: MAX_RETRIES
+            value: "12"
+
+      - name: smoke-test-frontend
+        runAfter: [deploy-frontend]
+        taskRef:
+          name: smoke-test
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "frontend"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+          - name: EXPECTED_STATUS
+            value: "200"
+          - name: MAX_RETRIES
+            value: "12"
+
+    finally:
+      - name: report-status
+        taskSpec:
+          steps:
+            - name: report
+              image: registry.redhat.io/ubi9/ubi-minimal:latest
+              script: |
+                #!/bin/bash
+                echo "════════════════════════════════════════════════════"
+                echo "  DEV PIPELINE — push to develop"
+                echo "  Commit : $(params.GIT_REVISION)"
+                echo "  Status : $(tasks.status)"
+                echo "  Sig #1 (DEV) created via RHTAS keyless signing"
+                echo "════════════════════════════════════════════════════"
+
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi
+    - name: artifacts
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 512Mi
+    - name: dockerconfig
+      secret:
+        secretName: registry-credentials
+        optional: true

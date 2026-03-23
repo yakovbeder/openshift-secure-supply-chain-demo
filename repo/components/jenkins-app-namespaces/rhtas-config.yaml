@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rhtas-config
+  namespace: secure-app-dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+data:
+  TUF_URL: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  FULCIO_URL: "https://fulcio-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  REKOR_URL: "https://rekor-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  TSA_URL: "https://tsa-server-trusted-artifact-signer.__CLUSTER_DOMAIN__/api/v1/timestamp"
+  OIDC_ISSUER: "https://jenkins.__CLUSTER_DOMAIN__/oidc"
+  COSIGN_FULCIO_URL: "https://fulcio-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_REKOR_URL: "https://rekor-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_MIRROR: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_ROOT: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__/root.json"
+  COSIGN_YES: "true"
+  ROX_CENTRAL_ENDPOINT: "central-stackrox.stackrox.svc:443"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rhtas-config
+  namespace: secure-app-staging
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+data:
+  TUF_URL: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  FULCIO_URL: "https://fulcio-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  REKOR_URL: "https://rekor-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  TSA_URL: "https://tsa-server-trusted-artifact-signer.__CLUSTER_DOMAIN__/api/v1/timestamp"
+  OIDC_ISSUER: "https://jenkins.__CLUSTER_DOMAIN__/oidc"
+  COSIGN_FULCIO_URL: "https://fulcio-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_REKOR_URL: "https://rekor-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_MIRROR: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_ROOT: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__/root.json"
+  COSIGN_YES: "true"
+  ROX_CENTRAL_ENDPOINT: "central-stackrox.stackrox.svc:443"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rhtas-config
+  namespace: secure-app-prod
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+data:
+  TUF_URL: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  FULCIO_URL: "https://fulcio-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  REKOR_URL: "https://rekor-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  TSA_URL: "https://tsa-server-trusted-artifact-signer.__CLUSTER_DOMAIN__/api/v1/timestamp"
+  OIDC_ISSUER: "https://jenkins.__CLUSTER_DOMAIN__/oidc"
+  COSIGN_FULCIO_URL: "https://fulcio-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_REKOR_URL: "https://rekor-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_MIRROR: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_ROOT: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__/root.json"
+  COSIGN_YES: "true"
+  ROX_CENTRAL_ENDPOINT: "central-stackrox.stackrox.svc:443"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rhtas-config
+  namespace: jenkins
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+data:
+  TUF_URL: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  FULCIO_URL: "https://fulcio-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  REKOR_URL: "https://rekor-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  TSA_URL: "https://tsa-server-trusted-artifact-signer.__CLUSTER_DOMAIN__/api/v1/timestamp"
+  OIDC_ISSUER: "https://jenkins.__CLUSTER_DOMAIN__/oidc"
+  COSIGN_FULCIO_URL: "https://fulcio-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_REKOR_URL: "https://rekor-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_MIRROR: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+  COSIGN_ROOT: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__/root.json"
+  COSIGN_YES: "true"

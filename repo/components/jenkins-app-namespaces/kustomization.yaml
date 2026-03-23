@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: rhtas-demo
+      app.kubernetes.io/managed-by: argocd
+    includeSelectors: false
+
+resources:
+  - wait-for-jenkins.yaml
+  - namespaces.yaml
+  - rhtas-config.yaml
+  - rbac.yaml

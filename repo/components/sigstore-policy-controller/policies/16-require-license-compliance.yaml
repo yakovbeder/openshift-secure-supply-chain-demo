@@ -1,0 +1,74 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# COMPLIANCE POLICY: License Compliance Verification
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Verify SBOM doesn't contain disallowed software licenses
+# Mode: warn (requires SBOM with license data)
+# Priority: 16
+#
+# This policy ensures:
+# - No copyleft licenses in commercial/proprietary applications
+# - Compliance with organizational license policies
+# - Legal risk mitigation for software distribution
+#
+# License categories:
+# - ALLOWED: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC
+# - RESTRICTED: GPL-2.0, GPL-3.0, LGPL-2.1, LGPL-3.0 (require approval)
+# - PROHIBITED: AGPL-3.0, SSPL, Commons Clause
+#
+# Pipeline integration:
+#   # Extract licenses from SBOM
+#   syft ${IMAGE} -o spdx-json > sbom.json
+#   # Create license attestation
+#   jq '{licenses: [.packages[].licenseConcluded] | unique}' sbom.json > license-report.json
+#   cosign attest --type https://example.com/license-scan/v1 --predicate license-report.json ${IMAGE}
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-license-compliance
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: compliance
+  annotations:
+    description: "Verify software licenses comply with organizational policy"
+    category: "compliance-license"
+    priority: "16"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: license-compliance
+          predicateType: https://example.com/license-scan/v1
+          policy:
+            type: cue
+            data: |
+              import "list"
+              
+              predicateType: "https://example.com/license-scan/v1"
+              
+              // Define prohibited licenses
+              #prohibitedLicenses: ["AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later", "SSPL-1.0", "Commons-Clause"]
+              
+              // Verify no prohibited licenses exist
+              predicate: {
+                licenses: [...string]
+                _hasProhibited: list.Contains(licenses, #prohibitedLicenses[_])
+                if _hasProhibited {
+                  _fail: "Prohibited license detected"
+                }
+              }
+  mode: warn
+
+

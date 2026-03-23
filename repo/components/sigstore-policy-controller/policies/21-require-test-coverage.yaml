@@ -1,0 +1,109 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# QUALITY POLICY: Test Coverage Attestation
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Require minimum test coverage threshold attestation
+# Mode: warn (requires test coverage reporting)
+# Priority: 21
+#
+# This policy ensures:
+# - Code has adequate unit test coverage
+# - Quality gates are enforced before deployment
+# - Regression testing is maintained
+# - Code quality standards are met
+#
+# Coverage thresholds:
+# - DEV: 60% minimum (iterative development)
+# - STAGING: 70% minimum (pre-production quality)
+# - PRODUCTION: 80% minimum (production readiness)
+#
+# Metrics tracked:
+# - Line coverage (% of lines executed)
+# - Branch coverage (% of branches taken)
+# - Function coverage (% of functions called)
+# - Statement coverage (% of statements executed)
+#
+# Pipeline integration:
+#   # Generate coverage with Jest/NYC/Istanbul
+#   npm test -- --coverage --coverageReporters=json-summary
+#   
+#   # Create attestation
+#   jq '{
+#     framework: "jest",
+#     timestamp: now | todate,
+#     coverage: {
+#       lines: .total.lines.pct,
+#       branches: .total.branches.pct,
+#       functions: .total.functions.pct,
+#       statements: .total.statements.pct
+#     },
+#     threshold: {
+#       minimum: 80,
+#       target: 90
+#     }
+#   }' coverage/coverage-summary.json > test-coverage.json
+#   
+#   cosign attest --type https://example.com/test-coverage/v1 --predicate test-coverage.json ${IMAGE}
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-test-coverage
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: quality
+  annotations:
+    description: "Require minimum test coverage threshold"
+    category: "quality-testing"
+    priority: "21"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: test-coverage
+          predicateType: https://example.com/test-coverage/v1
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://example.com/test-coverage/v1"
+              
+              predicate: {
+                framework: string
+                timestamp?: string
+                
+                coverage: {
+                  lines: number
+                  branches?: number
+                  functions?: number
+                  statements?: number
+                }
+                
+                threshold: {
+                  minimum: number | *70
+                  target?: number
+                }
+                
+                // Verify line coverage meets minimum
+                if coverage.lines < threshold.minimum {
+                  _fail: "Test coverage \(coverage.lines)% below minimum \(threshold.minimum)%"
+                }
+                
+                // Warn if branch coverage is significantly lower
+                if coverage.branches != _|_ && coverage.branches < (threshold.minimum - 10) {
+                  _warn: "Branch coverage \(coverage.branches)% is low"
+                }
+              }
+  mode: warn
+
+

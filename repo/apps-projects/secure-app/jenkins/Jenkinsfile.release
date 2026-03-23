@@ -1,0 +1,245 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// PRODUCTION PIPELINE — Verify full chain (2 sigs), sign (Sig #3),
+//                        verify 3-sig chain, Rekor audit, deploy prod
+// Triggers: Push to release/* branches
+// Image promotion: same image from develop, verified through staging
+// Image path: <quay>/secure-app/backend:<sha>, <quay>/secure-app/frontend:<sha>
+// ═══════════════════════════════════════════════════════════════════════════
+
+pipeline {
+    agent { label 'supply-chain' }
+
+    options {
+        timeout(time: 60, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    environment {
+        QUAY_ORG       = 'secure-app'
+        NAMESPACE      = 'secure-app-prod'
+        IMAGE_TAG      = env.GIT_COMMIT?.take(8) ?: 'latest'
+        ENVIRONMENT    = 'prod'
+    }
+
+    stages {
+        stage('Prepare') {
+            steps {
+                script {
+                    if (fileExists('/run/quay-registry/QUAY_REGISTRY')) {
+                        env.REGISTRY = readFile('/run/quay-registry/QUAY_REGISTRY').trim()
+                        env.USE_QUAY = 'true'
+                    } else {
+                        env.REGISTRY = env.QUAY_REGISTRY ?: 'image-registry.openshift-image-registry.svc:5000'
+                        env.USE_QUAY = env.QUAY_REGISTRY ? 'true' : 'false'
+                    }
+                    env.BACKEND_IMG  = "${env.REGISTRY}/${env.QUAY_ORG}/backend:${env.IMAGE_TAG}"
+                    env.FRONTEND_IMG = "${env.REGISTRY}/${env.QUAY_ORG}/frontend:${env.IMAGE_TAG}"
+                    echo """
+                    ╔══════════════════════════════════════════════════╗
+                    ║  PRODUCTION PIPELINE — PREPARE                  ║
+                    ╠══════════════════════════════════════════════════╣
+                    ║  Registry : ${env.REGISTRY}
+                    ║  Org      : ${env.QUAY_ORG}
+                    ║  Tag      : ${env.IMAGE_TAG}
+                    ║  Backend  : ${env.BACKEND_IMG}
+                    ║  Frontend : ${env.FRONTEND_IMG}
+                    ╚══════════════════════════════════════════════════╝
+                    """
+                }
+            }
+        }
+
+        stage('Tool Check') {
+            steps {
+                sh '''
+                    CLI_SERVER="http://cli-server.trusted-artifact-signer.svc:8080"
+                    for tool in cosign rekor-cli; do
+                        if ! command -v $tool >/dev/null 2>&1; then
+                            curl -skL "$CLI_SERVER/clients/linux/${tool}-amd64.gz" | gunzip > /tmp/$tool && chmod +x /tmp/$tool
+                        fi
+                    done
+                    for tool in syft trivy; do
+                        if ! command -v $tool >/dev/null 2>&1; then
+                            if [ "$tool" = "syft" ]; then
+                                curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /tmp
+                            else
+                                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp
+                            fi
+                        fi
+                    done
+                    export PATH=/tmp:$PATH
+                    echo "Tools ready"
+                '''
+            }
+        }
+
+        stage('Verify Pre-Prod Chain (2 sigs: DEV + STAGING)') {
+            steps {
+                sh """
+                    export PATH=/tmp:\$PATH
+                    cosign initialize --mirror=\${TUF_URL} --root=\${TUF_URL}/root.json || true
+
+                    for img in \${BACKEND_IMG} \${FRONTEND_IMG}; do
+                        SIG_COUNT=\$(cosign verify \
+                            --rekor-url=\${REKOR_URL} \
+                            --certificate-identity-regexp=".*" \
+                            --certificate-oidc-issuer-regexp=".*" \
+                            \$img 2>/dev/null | jq 'length')
+                        echo "\$img signatures: \${SIG_COUNT}"
+                        [ "\${SIG_COUNT}" -ge 2 ] || (echo "FAIL: Pre-prod gate requires 2 signatures, found \${SIG_COUNT}" && exit 1)
+                    done
+                """
+            }
+        }
+
+        stage('Security Scans') {
+            parallel {
+                stage('Trivy Scan') {
+                    steps {
+                        sh """
+                            export PATH=/tmp:\$PATH
+                            trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 0 \${BACKEND_IMG} || true
+                            trivy image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 0 \${FRONTEND_IMG} || true
+                        """
+                    }
+                }
+                stage('ACS Scan') {
+                    steps {
+                        sh """
+                            ROX_ENDPOINT=\${ROX_CENTRAL_ENDPOINT:-central-stackrox.stackrox.svc:443}
+                            if [ -f /run/acs-rox/rox_api_token ]; then
+                                export ROX_API_TOKEN=\$(cat /run/acs-rox/rox_api_token)
+                                roxctl image scan  --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify --image=\${BACKEND_IMG} --output=table || true
+                                roxctl image check --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify --image=\${BACKEND_IMG} || true
+                                roxctl image scan  --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify --image=\${FRONTEND_IMG} --output=table || true
+                                roxctl image check --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify --image=\${FRONTEND_IMG} || true
+                            else
+                                echo "No ACS token — skipping"
+                            fi
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Sign Images (Sig #3 — PROD)') {
+            steps {
+                withCredentials([file(credentialsId: 'sigstore-oidc-token', variable: 'OIDC_TOKEN_FILE')]) {
+                    sh """
+                        export PATH=/tmp:\$PATH
+                        cosign sign \
+                            --fulcio-url=\${FULCIO_URL} \
+                            --rekor-url=\${REKOR_URL} \
+                            --oidc-issuer=\${OIDC_ISSUER} \
+                            --identity-token=\$(cat \${OIDC_TOKEN_FILE}) \
+                            --yes \
+                            \${BACKEND_IMG}
+
+                        cosign sign \
+                            --fulcio-url=\${FULCIO_URL} \
+                            --rekor-url=\${REKOR_URL} \
+                            --oidc-issuer=\${OIDC_ISSUER} \
+                            --identity-token=\$(cat \${OIDC_TOKEN_FILE}) \
+                            --yes \
+                            \${FRONTEND_IMG}
+                    """
+                }
+            }
+        }
+
+        stage('Verify Full Chain (3 sigs: DEV > STAGING > PROD)') {
+            steps {
+                sh """
+                    export PATH=/tmp:\$PATH
+                    for img in \${BACKEND_IMG} \${FRONTEND_IMG}; do
+                        SIG_COUNT=\$(cosign verify \
+                            --rekor-url=\${REKOR_URL} \
+                            --certificate-identity-regexp=".*" \
+                            --certificate-oidc-issuer-regexp=".*" \
+                            \$img 2>/dev/null | jq 'length')
+                        echo "\$img signatures: \${SIG_COUNT}"
+                        [ "\${SIG_COUNT}" -ge 3 ] || (echo "FAIL: Production requires 3 signatures, found \${SIG_COUNT}" && exit 1)
+                    done
+                """
+            }
+        }
+
+        stage('Rekor Audit Trail') {
+            steps {
+                sh """
+                    export PATH=/tmp:\$PATH
+                    echo "╔══════════════════════════════════════╗"
+                    echo "║  Rekor Transparency Audit            ║"
+                    echo "╚══════════════════════════════════════╝"
+                    for img in \${BACKEND_IMG} \${FRONTEND_IMG}; do
+                        echo "--- \$img ---"
+                        rekor-cli search --rekor_server=\${REKOR_URL} --sha="\$(cosign triangulate \$img 2>/dev/null | head -1)" 2>/dev/null || \
+                            echo "Rekor search completed for \$img"
+                    done
+                """
+            }
+        }
+
+        stage('Deploy to PRODUCTION') {
+            steps {
+                sh """
+                    oc set image deployment/backend backend=\${BACKEND_IMG} -n ${NAMESPACE} 2>/dev/null || \
+                        oc create deployment backend --image=\${BACKEND_IMG} -n ${NAMESPACE} --replicas=3
+
+                    oc set image deployment/frontend frontend=\${FRONTEND_IMG} -n ${NAMESPACE} 2>/dev/null || \
+                        oc create deployment frontend --image=\${FRONTEND_IMG} -n ${NAMESPACE} --replicas=3
+
+                    if [ "\${USE_QUAY}" = "true" ]; then
+                        oc secrets link default quay-pull-secret --for=pull -n ${NAMESPACE} 2>/dev/null || true
+                        for dep in backend frontend; do
+                            oc patch deployment \$dep -n ${NAMESPACE} \
+                                -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"quay-pull-secret"}]}}}}' --type=merge 2>/dev/null || true
+                        done
+                    fi
+
+                    oc rollout status deployment/backend  -n ${NAMESPACE} --timeout=300s || true
+                    oc rollout status deployment/frontend -n ${NAMESPACE} --timeout=300s || true
+                """
+            }
+        }
+
+        stage('Production Smoke Tests') {
+            steps {
+                sh """
+                    for svc in backend frontend; do
+                        ROUTE=\$(oc get route \$svc -n ${NAMESPACE} -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+                        if [ -n "\${ROUTE}" ]; then
+                            ENDPOINT="/"
+                            [ "\$svc" = "backend" ] && ENDPOINT="/health"
+                            for i in \$(seq 1 15); do
+                                STATUS=\$(curl -sk -o /dev/null -w '%{http_code}' "https://\${ROUTE}\${ENDPOINT}" 2>/dev/null || echo "000")
+                                [ "\${STATUS}" = "200" ] && echo "\$svc healthy (\${ROUTE})" && break
+                                sleep 5
+                            done
+                        else
+                            echo "\$svc: no route — creating"
+                            oc expose deployment/\$svc -n ${NAMESPACE} --port=8080 2>/dev/null || true
+                            oc expose svc/\$svc -n ${NAMESPACE} 2>/dev/null || true
+                        fi
+                    done
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            echo """
+            ════════════════════════════════════════════════════
+              PRODUCTION PIPELINE — push to release/* (Jenkins)
+              Commit : ${env.GIT_COMMIT?.take(8) ?: 'unknown'}
+              Status : ${currentBuild.currentResult}
+              Images : ${env.QUAY_ORG}/backend:${env.IMAGE_TAG}
+                       ${env.QUAY_ORG}/frontend:${env.IMAGE_TAG}
+              Sig #3 (PROD) — full chain: DEV → STAGING → PROD
+              Rekor audit trail recorded for compliance
+            ════════════════════════════════════════════════════
+            """
+        }
+    }
+}

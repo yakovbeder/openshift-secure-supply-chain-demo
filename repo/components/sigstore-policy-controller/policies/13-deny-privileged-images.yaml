@@ -1,0 +1,62 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# SECURITY POLICY: Deny Privileged/Root Images
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Block images known to require privileged access or run as root
+# Mode: warn (review before enforcing)
+# Priority: 13
+#
+# This policy blocks images that:
+# - Are known to require privileged mode
+# - Run as root by default
+# - Require host network/PID/IPC namespaces
+# - Are commonly used for container escapes
+#
+# Common privileged images to block:
+# - Docker-in-Docker (dind)
+# - Kubernetes tools with cluster access
+# - Network debugging tools
+# - System administration containers
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: deny-privileged-images
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: security
+  annotations:
+    description: "Block images known to require privileged access"
+    category: "security-privileged"
+    priority: "13"
+spec:
+  images:
+    # Docker-in-Docker images
+    - glob: "**/docker:*dind*"
+    - glob: "**/docker:*-dind"
+    - glob: "docker.io/library/docker:*dind*"
+    
+    # Privileged debugging tools
+    - glob: "**/netshoot*"
+    - glob: "**/nicolaka/netshoot*"
+    - glob: "**/busybox:*"
+    
+    # Crypto mining images (commonly abused)
+    - glob: "**/xmrig*"
+    - glob: "**/monero*"
+    - glob: "**/cryptominer*"
+    - glob: "**/minerd*"
+    
+    # Known attack tools
+    - glob: "**/kali*"
+    - glob: "**/parrot*"
+    - glob: "**/metasploit*"
+    
+  authorities:
+    - static:
+        action: fail
+  mode: warn
+
+

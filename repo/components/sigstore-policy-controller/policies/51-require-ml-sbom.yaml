@@ -1,0 +1,45 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# ML POLICY: Require SBOM for ML Serving Images
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Warn if ML serving images lack SBOM attestation
+# Mode: warn
+# Priority: 51
+#
+# ML images contain complex Python/CUDA dependencies that must be tracked.
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-ml-sbom-attestation
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: ml-attestation
+  annotations:
+    description: "Warn if ML serving images lack SBOM attestation"
+    category: "ml-attestation-sbom"
+    priority: "51"
+spec:
+  images:
+    - glob: "default-route-openshift-image-registry.*/*-server:*"
+    - glob: "image-registry.openshift-image-registry.svc:5000/*/*-server:*"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: "https://kubernetes.default.svc"
+            subjectRegExp: "system:serviceaccount:ml-model-.*:.*"
+          - issuer: "https://gitlab.__CLUSTER_DOMAIN__"
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: ml-sbom-attestation
+          predicateType: "https://spdx.dev/Document"
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://spdx.dev/Document"
+  mode: warn

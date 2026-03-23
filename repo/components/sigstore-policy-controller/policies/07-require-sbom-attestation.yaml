@@ -1,0 +1,27 @@
+# Require CycloneDX SBOM attestation — proves what components are inside the image
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-sbom-attestation
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: attestation
+  annotations:
+    description: "Require CycloneDX SBOM attestation for supply chain transparency"
+spec:
+  images:
+    - glob: "registry-quay-quay.__CLUSTER_DOMAIN__/secure-app/**"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: sbom-cyclonedx
+          predicateType: https://cyclonedx.org/bom
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://cyclonedx.org/bom"
+  mode: enforce

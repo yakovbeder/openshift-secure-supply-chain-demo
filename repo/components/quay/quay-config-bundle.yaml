@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: quay-config-bundle
+  namespace: quay
+type: Opaque
+stringData:
+  config.yaml: |
+    FEATURE_USER_INITIALIZE: true
+    FEATURE_USER_CREATION: true
+    SUPER_USERS:
+    - admin

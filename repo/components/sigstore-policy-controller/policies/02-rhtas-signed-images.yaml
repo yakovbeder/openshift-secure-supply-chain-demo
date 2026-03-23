@@ -1,0 +1,20 @@
+# Require RHTAS keyless signature for all secure-app images in Quay
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: rhtas-signed-images
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: signature-verification
+  annotations:
+    description: "Require RHTAS keyless signature for secure-app images"
+spec:
+  images:
+    - glob: "registry-quay-quay.__CLUSTER_DOMAIN__/secure-app/**"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+        trustRootRef: rhtas-trust
+  mode: enforce

@@ -1,0 +1,123 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Operator (Red Hat Policy Controller — provides policy.sigstore.dev CRDs)
+  - namespace.yaml
+  - subscription.yaml
+  - policycontroller.yaml
+  # Core configuration (applied after CRDs are available via SkipDryRunOnMissingResource)
+  - trustroot.yaml
+  # OpenShift: SCC for policy-controller-webhook (anyuid — controller runs as user 1000)
+  - scc-binding.yaml
+  # PostSync: fetch TUF root.json so policy controller can use correct certs (optional, if controller uses TUF)
+  - trustroot-tuf-secret-job.yaml
+  
+  # ════════════════════════════════════════════════════════════════════════════
+  # CLUSTER IMAGE POLICIES
+  # ════════════════════════════════════════════════════════════════════════════
+  #
+  # Numbering Convention:
+  # 01-09: Allow List & Signature Policies (always enabled)
+  # 07-09: Attestation Policies (require pipeline setup)
+  # 10-19: Deny List & Security Policies
+  # 99:    Catch-All Policies
+  #
+  # To disable a policy, comment out its line below
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # MULTI-SIGNATURE CHAIN POLICY (Production images require 3 signatures)
+  # ──────────────────────────────────────────────────────────────────────────────
+  - policies/00-require-multi-signature-chain.yaml     # Prod-only: needs 3 sigs (dev+staging+release)
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # ALLOW LIST POLICIES
+  # ──────────────────────────────────────────────────────────────────────────────
+  - policies/01-allow-redhat-images.yaml
+  
+  # ──────────────────────────────────────────────────────────────────────────────
+  # SIGNATURE VERIFICATION POLICIES
+  # ──────────────────────────────────────────────────────────────────────────────
+  - policies/02-rhtas-signed-images.yaml
+  
+  # ──────────────────────────────────────────────────────────────────────────────
+  # IDENTITY-BASED POLICIES
+  # ──────────────────────────────────────────────────────────────────────────────
+  - policies/03-require-pipeline-signature.yaml        # Only Jenkins OIDC pipeline identities
+  - policies/04-require-develop-or-main-signature.yaml
+  - policies/05-require-production-release-signature.yaml  # Prod-only: release/* tags
+  - policies/06-require-multi-signature.yaml           # Prod-only: needs 2 sigs (dev + main/release)
+  
+  # ──────────────────────────────────────────────────────────────────────────────
+  # ATTESTATION POLICIES (verified by pipeline: cosign attest)
+  # ──────────────────────────────────────────────────────────────────────────────
+  - policies/07-require-sbom-attestation.yaml          # CycloneDX SBOM via syft + cosign attest
+  - policies/08-require-vulnerability-scan.yaml        # Trivy scan via cosign attest --type vuln
+  - policies/09-require-acs-policy-check.yaml          # ACS roxctl check via cosign attest --type stackrox
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # DENY LIST POLICIES
+  # ──────────────────────────────────────────────────────────────────────────────
+  - policies/10-deny-risky-tags.yaml
+  - policies/11-deny-untrusted-registries.yaml         # Block docker.io, ghcr.io, gcr.io
+  # - policies/12-deny-known-vulnerable-images.yaml    # ACS handles this
+  # - policies/13-deny-privileged-images.yaml          # Blocks dind, netshoot, etc.
+  
+  # ──────────────────────────────────────────────────────────────────────────────
+  # COMPLIANCE POLICIES (Uncomment after attestation setup)
+  # ──────────────────────────────────────────────────────────────────────────────
+  # - policies/14-require-image-labels.yaml            # Requires: label attestation
+  # - policies/15-require-base-image-allowlist.yaml    # Requires: base image attestation
+  # - policies/16-require-license-compliance.yaml      # Requires: license scan attestation
+  
+  # ──────────────────────────────────────────────────────────────────────────────
+  # ADVANCED SECURITY POLICIES (Uncomment to enable)
+  # ──────────────────────────────────────────────────────────────────────────────
+  # - policies/17-require-image-freshness.yaml         # Requires: build timestamp attestation
+  # - policies/18-require-secret-scan.yaml             # Requires: secret scanning (Trufflehog/Gitleaks)
+  # - policies/19-require-sast-scan.yaml               # Requires: SAST scan (Semgrep)
+  # - policies/25-deny-large-images.yaml               # Requires: image size attestation
+  # - policies/26-require-runtime-security.yaml        # Requires: security profile attestation
+  
+  # ──────────────────────────────────────────────────────────────────────────────
+  # GOVERNANCE POLICIES (Uncomment for regulated environments)
+  # ──────────────────────────────────────────────────────────────────────────────
+  # - policies/20-require-code-review.yaml             # Requires: GitLab MR approval attestation
+  # - policies/24-require-human-approval.yaml          # Requires: dual signature (human + CI)
+  
+  # ──────────────────────────────────────────────────────────────────────────────
+  # QUALITY POLICIES (Uncomment after test coverage setup)
+  # ──────────────────────────────────────────────────────────────────────────────
+  # - policies/21-require-test-coverage.yaml           # Requires: coverage attestation
+  
+  # ──────────────────────────────────────────────────────────────────────────────
+  # SUPPLY CHAIN POLICIES (Uncomment for SLSA Level 3+)
+  # ──────────────────────────────────────────────────────────────────────────────
+  # - policies/22-require-dependency-pinning.yaml      # Requires: dependency analysis attestation
+  # - policies/23-require-hermetic-build.yaml          # Requires: hermetic build attestation
+  
+  # ──────────────────────────────────────────────────────────────────────────────
+  # OPERATIONAL POLICIES (Uncomment for production readiness)
+  # ──────────────────────────────────────────────────────────────────────────────
+  # - policies/27-require-operational-readiness.yaml   # Requires: ops metadata attestation
+  
+  # ──────────────────────────────────────────────────────────────────────────────
+  # ML PIPELINE POLICIES (Uncomment when ml-model-app pipeline is active)
+  # ──────────────────────────────────────────────────────────────────────────────
+  # - policies/50-require-signed-ml-serving.yaml
+  # - policies/51-require-ml-sbom.yaml
+  # - policies/52-require-ml-vuln-scan.yaml
+  # - policies/53-require-model-card.yaml
+  # - policies/54-require-training-provenance.yaml
+  # - policies/55-deny-unsigned-ml-inference.yaml
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # CATCH-ALL POLICIES
+  # ──────────────────────────────────────────────────────────────────────────────
+  - policies/99-block-all-unsigned.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: rhtas-demo
+      app.kubernetes.io/component: sigstore-policy-controller

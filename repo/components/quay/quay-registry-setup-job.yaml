@@ -1,0 +1,227 @@
+# PostSync Job: Wait for Quay API, then create organizations, repositories,
+# robot accounts, and registry credentials in Jenkins and app namespaces.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quay-registry-setup
+  namespace: quay
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: quay-registry-setup-read-route
+  namespace: quay
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+rules:
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: quay-registry-setup-read-route
+  namespace: quay
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: quay-registry-setup-read-route
+subjects:
+  - kind: ServiceAccount
+    name: quay-registry-setup
+    namespace: quay
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: quay-registry-setup-write-secrets
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "namespaces"]
+    verbs: ["create", "patch", "get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: quay-registry-setup-write-secrets
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: quay-registry-setup-write-secrets
+subjects:
+  - kind: ServiceAccount
+    name: quay-registry-setup
+    namespace: quay
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: quay-registry-setup
+  namespace: quay
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "25"
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 6
+  template:
+    spec:
+      serviceAccountName: quay-registry-setup
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-quay-api
+          image: registry.redhat.io/openshift4/ose-cli:latest
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Quay API readiness..."
+              for i in $(seq 1 120); do
+                QUAY_HOST=$(oc get route -n quay -o jsonpath='{.items[0].spec.host}' 2>/dev/null || true)
+                if [ -n "$QUAY_HOST" ]; then
+                  HTTP=$(curl -sk -o /dev/null -w "%{http_code}" "https://${QUAY_HOST}/health/instance" 2>/dev/null || echo "000")
+                  if [ "$HTTP" = "200" ]; then
+                    echo "Quay API ready at https://${QUAY_HOST}"
+                    exit 0
+                  fi
+                fi
+                echo "  attempt ${i}/120..."
+                sleep 5
+              done
+              echo "Quay API not ready in time"
+              exit 1
+      containers:
+        - name: setup
+          image: registry.redhat.io/openshift4/ose-cli:latest
+          env:
+            - name: QUAY_USER
+              value: "admin"
+            - name: QUAY_PASSWORD
+              value: "openshift"
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              QUAY_HOST=$(oc get route -n quay -o jsonpath='{.items[0].spec.host}')
+              QUAY_URL="https://${QUAY_HOST}"
+              echo "Quay registry: ${QUAY_URL}"
+
+              # ── Initialize admin user (idempotent) ──
+              echo "Initializing Quay admin user..."
+              INIT_RESP=$(curl -sk -X POST "${QUAY_URL}/api/v1/user/initialize" \
+                -H "Content-Type: application/json" \
+                -d "{\"username\":\"${QUAY_USER}\",\"password\":\"${QUAY_PASSWORD}\",\"email\":\"admin@example.com\",\"access_token\":true}")
+              if echo "${INIT_RESP}" | grep -q "access_token"; then
+                echo "Admin user created"
+              elif echo "${INIT_RESP}" | grep -q "already been initialized"; then
+                echo "Admin user already exists"
+              fi
+
+              # ── Helper: Quay API with CSRF session cookies ──
+              quay_api() {
+                local METHOD="$1" ENDPOINT="$2" DATA="$3"
+                local CSRF=$(curl -sk -b /tmp/qjar -c /tmp/qjar "${QUAY_URL}/csrf_token" \
+                  | python3 -c "import sys,json; print(json.load(sys.stdin)['csrf_token'])")
+                if [ -n "$DATA" ]; then
+                  curl -sk -b /tmp/qjar -X "${METHOD}" "${QUAY_URL}/api/v1${ENDPOINT}" \
+                    -H "Content-Type: application/json" -H "X-CSRF-Token: ${CSRF}" -d "${DATA}"
+                else
+                  curl -sk -b /tmp/qjar -X "${METHOD}" "${QUAY_URL}/api/v1${ENDPOINT}" \
+                    -H "X-CSRF-Token: ${CSRF}"
+                fi
+              }
+
+              # ── Login session ──
+              echo "Logging in..."
+              CSRF0=$(curl -sk -c /tmp/qjar "${QUAY_URL}/csrf_token" \
+                | python3 -c "import sys,json; print(json.load(sys.stdin)['csrf_token'])")
+              curl -sk -b /tmp/qjar -c /tmp/qjar -X POST "${QUAY_URL}/api/v1/signin" \
+                -H "Content-Type: application/json" -H "X-CSRF-Token: ${CSRF0}" \
+                -d "{\"username\":\"${QUAY_USER}\",\"password\":\"${QUAY_PASSWORD}\"}" >/dev/null
+
+              # ── Define project structure ──
+              # Format: ORG_NAME:REPO1,REPO2,...:NS1,NS2,...
+              PROJECTS="secure-app:backend,frontend:secure-app-dev,secure-app-staging,secure-app-prod
+              ml-model-app:serving:ml-model-app-dev,ml-model-app-staging,ml-model-app-prod"
+
+              for PROJECT in ${PROJECTS}; do
+                ORG=$(echo "$PROJECT" | cut -d: -f1)
+                REPOS=$(echo "$PROJECT" | cut -d: -f2)
+                NAMESPACES=$(echo "$PROJECT" | cut -d: -f3)
+
+                echo ""
+                echo "══════════════════════════════════════"
+                echo "  Organization: ${ORG}"
+                echo "══════════════════════════════════════"
+
+                # Create organization (idempotent)
+                quay_api POST "/organization/" \
+                  "{\"name\":\"${ORG}\",\"email\":\"${ORG}@rhtas-demo.local\"}" >/dev/null 2>&1 || true
+                echo "  Org '${ORG}' ensured"
+
+                # Create repositories
+                IFS=',' read -ra REPO_LIST <<< "${REPOS}"
+                for REPO in "${REPO_LIST[@]}"; do
+                  quay_api POST "/repository" \
+                    "{\"namespace\":\"${ORG}\",\"repository\":\"${REPO}\",\"visibility\":\"public\",\"description\":\"${ORG}/${REPO}\"}" >/dev/null 2>&1 || true
+                  echo "  Repo '${ORG}/${REPO}' ensured"
+                done
+
+                # Create robot account
+                ROBOT_RESP=$(quay_api PUT "/organization/${ORG}/robots/ci" \
+                  '{"description":"CI pipeline robot"}' 2>/dev/null)
+                ROBOT_TOKEN=$(echo "${ROBOT_RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
+                if [ -z "${ROBOT_TOKEN}" ]; then
+                  ROBOT_RESP=$(quay_api GET "/organization/${ORG}/robots/ci" 2>/dev/null)
+                  ROBOT_TOKEN=$(echo "${ROBOT_RESP}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || true)
+                fi
+                echo "  Robot '${ORG}+ci' ensured (token length: ${#ROBOT_TOKEN})"
+
+                # Grant robot write on each repo
+                for REPO in "${REPO_LIST[@]}"; do
+                  quay_api PUT "/repository/${ORG}/${REPO}/permissions/user/${ORG}+ci" \
+                    '{"role":"write"}' >/dev/null 2>&1 || true
+                  echo "  Robot '${ORG}+ci' → write on ${ORG}/${REPO}"
+                done
+
+                # Create Jenkins registry credentials (once, for the first org)
+                if [ "${ORG}" = "secure-app" ]; then
+                  oc create secret generic quay-registry-credentials -n jenkins \
+                    --from-literal=QUAY_REGISTRY="${QUAY_HOST}" \
+                    --from-literal=QUAY_ORG="${ORG}" \
+                    --from-literal=QUAY_USER="${ORG}+ci" \
+                    --from-literal=QUAY_PASSWORD="${ROBOT_TOKEN}" \
+                    --dry-run=client -o yaml | oc apply -f -
+                  echo "  Created quay-registry-credentials in jenkins"
+                fi
+
+                # Create pull secrets in app namespaces
+                IFS=',' read -ra NS_LIST <<< "${NAMESPACES}"
+                for NS in "${NS_LIST[@]}"; do
+                  oc create namespace "${NS}" --dry-run=client -o yaml | oc apply -f - 2>/dev/null || true
+                  oc create secret docker-registry quay-pull-secret -n "${NS}" \
+                    --docker-server="${QUAY_HOST}" \
+                    --docker-username="${ORG}+ci" \
+                    --docker-password="${ROBOT_TOKEN}" \
+                    --dry-run=client -o yaml | oc apply -f -
+                  echo "  Created quay-pull-secret in ${NS}"
+                done
+              done
+
+              echo ""
+              echo "════════════════════════════════════════"
+              echo "  Quay registry setup complete"
+              echo "  Organizations: secure-app, ml-model-app"
+              echo "  Robot accounts: secure-app+ci, ml-model-app+ci"
+              echo "════════════════════════════════════════"

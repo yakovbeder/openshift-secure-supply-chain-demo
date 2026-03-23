@@ -1,0 +1,111 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# SUPPLY CHAIN POLICY: Hermetic Build Verification (SLSA Level 3+)
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Verify build was hermetic (no network access during build)
+# Mode: warn (requires SLSA-compliant build system)
+# Priority: 23
+#
+# Hermetic builds guarantee:
+# - No external dependencies fetched during build
+# - Build inputs fully declared and immutable
+# - Build is reproducible from declared sources
+# - No supply chain injection during build process
+#
+# SLSA Level Requirements:
+# - Level 1: Build process documented
+# - Level 2: Tamper-resistant build service
+# - Level 3: Hardened build + hermetic builds ← This policy
+# - Level 4: Two-party review + hermetic
+#
+# Hermetic build characteristics:
+# - Network disabled during build execution
+# - All dependencies pre-fetched and cached
+# - No arbitrary code execution from network
+# - Deterministic output from same inputs
+#
+# Pipeline integration (with Buildah/Podman):
+#   # Build with network disabled
+#   buildah bud --network=none --layers --force-rm \
+#     --build-arg DEPENDENCIES_CACHED=true \
+#     -t ${IMAGE} .
+#   
+#   # Create hermetic attestation
+#   echo "{
+#     \"buildSystem\": \"buildah\",
+#     \"networkDisabled\": true,
+#     \"dependenciesCached\": true,
+#     \"buildTimestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+#     \"builderVersion\": \"$(buildah --version | head -1)\",
+#     \"hermetic\": true,
+#     \"slsaLevel\": 3
+#   }" > hermetic-build.json
+#   
+#   cosign attest --type https://example.com/hermetic-build/v1 --predicate hermetic-build.json ${IMAGE}
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-hermetic-build
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: supply-chain
+  annotations:
+    description: "Require hermetic build attestation (SLSA Level 3)"
+    category: "supply-chain-hermetic"
+    priority: "23"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*:prod-*
+    - glob: default-route-openshift-image-registry.*/secure-app/*:v*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: hermetic-build
+          predicateType: https://example.com/hermetic-build/v1
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://example.com/hermetic-build/v1"
+              
+              predicate: {
+                buildSystem: string
+                networkDisabled: bool
+                dependenciesCached: bool
+                buildTimestamp?: string
+                builderVersion?: string
+                hermetic: bool
+                slsaLevel: number
+                
+                // Network must be disabled during build
+                if !networkDisabled {
+                  _fail: "Build was not hermetic - network was enabled"
+                }
+                
+                // Dependencies must be pre-cached
+                if !dependenciesCached {
+                  _fail: "Build was not hermetic - dependencies not cached"
+                }
+                
+                // Hermetic flag must be true
+                if !hermetic {
+                  _fail: "Build not marked as hermetic"
+                }
+                
+                // Require at least SLSA Level 3 for production
+                if slsaLevel < 3 {
+                  _fail: "SLSA level \(slsaLevel) below required level 3"
+                }
+              }
+  mode: warn
+
+

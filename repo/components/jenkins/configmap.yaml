@@ -1,0 +1,167 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-config
+  namespace: jenkins
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  jenkins.yaml: |
+    jenkins:
+      systemMessage: "RHTAS Demo — Jenkins on OpenShift (managed by ArgoCD)"
+      numExecutors: 0
+      mode: EXCLUSIVE
+
+      clouds:
+        - kubernetes:
+            name: "openshift"
+            serverUrl: "https://kubernetes.default.svc"
+            namespace: "jenkins"
+            jenkinsUrl: "http://jenkins.jenkins.svc:8080"
+            jenkinsTunnel: "jenkins-agent.jenkins.svc:50000"
+            containerCapStr: "10"
+            maxRequestsPerHostStr: "32"
+            retentionTimeout: 5
+            templates:
+              - name: "default-agent"
+                namespace: "jenkins"
+                label: "default"
+                nodeUsageMode: NORMAL
+                serviceAccount: "jenkins"
+                containers:
+                  - name: "jnlp"
+                    image: "image-registry.openshift-image-registry.svc:5000/openshift/jenkins-agent-base:latest"
+                    alwaysPullImage: false
+                    workingDir: "/home/jenkins/agent"
+                    resourceRequestCpu: "200m"
+                    resourceRequestMemory: "256Mi"
+                    resourceLimitCpu: "500m"
+                    resourceLimitMemory: "512Mi"
+
+              - name: "supply-chain-agent"
+                namespace: "jenkins"
+                label: "supply-chain"
+                nodeUsageMode: EXCLUSIVE
+                serviceAccount: "jenkins"
+                volumes:
+                  - secretVolume:
+                      secretName: "quay-registry-credentials"
+                      mountPath: "/run/quay-registry"
+                      optional: true
+                  - secretVolume:
+                      secretName: "acs-rox-credentials"
+                      mountPath: "/run/acs-rox"
+                      optional: true
+                  - emptyDirVolume:
+                      mountPath: "/var/lib/containers"
+                      memory: false
+                  - emptyDirVolume:
+                      mountPath: "/home/jenkins/agent"
+                      memory: false
+                containers:
+                  - name: "jnlp"
+                    image: "image-registry.openshift-image-registry.svc:5000/jenkins/jenkins-agent-supply-chain:latest"
+                    alwaysPullImage: true
+                    workingDir: "/home/jenkins/agent"
+                    resourceRequestCpu: "1"
+                    resourceRequestMemory: "1Gi"
+                    resourceLimitCpu: "2"
+                    resourceLimitMemory: "4Gi"
+                  - name: "buildah"
+                    image: "registry.redhat.io/rhel8/buildah:latest"
+                    command: "sleep"
+                    args: "infinity"
+                    workingDir: "/home/jenkins/agent"
+                    ttyEnabled: true
+                    privileged: true
+                    resourceRequestCpu: "1"
+                    resourceRequestMemory: "1Gi"
+                    resourceLimitCpu: "4"
+                    resourceLimitMemory: "8Gi"
+                envVars:
+                  - envVar:
+                      key: "TUF_URL"
+                      value: "https://tuf-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+                  - envVar:
+                      key: "FULCIO_URL"
+                      value: "https://fulcio-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+                  - envVar:
+                      key: "REKOR_URL"
+                      value: "https://rekor-server-trusted-artifact-signer.__CLUSTER_DOMAIN__"
+                  - envVar:
+                      key: "TSA_URL"
+                      value: "https://tsa-server-trusted-artifact-signer.__CLUSTER_DOMAIN__/api/v1/timestamp"
+                  - envVar:
+                      key: "OIDC_ISSUER"
+                      value: "https://jenkins.__CLUSTER_DOMAIN__/oidc"
+                  - envVar:
+                      key: "COSIGN_YES"
+                      value: "true"
+                  - envVar:
+                      key: "QUAY_REGISTRY"
+                      value: "registry-quay-quay.__CLUSTER_DOMAIN__"
+                  - envVar:
+                      key: "QUAY_ORG"
+                      value: "secure-app"
+                  - envVar:
+                      key: "QUAY_USER"
+                      value: "secure-app+ci"
+                  - envVar:
+                      key: "ROX_CENTRAL_ENDPOINT"
+                      value: "central.stackrox.svc:443"
+                  - envVar:
+                      key: "GIT_SSL_NO_VERIFY"
+                      value: "true"
+
+    credentials:
+      system:
+        domainCredentials:
+          - credentials:
+              - usernamePassword:
+                  id: "gitlab-api-token"
+                  description: "GitLab root credentials"
+                  scope: GLOBAL
+                  username: "root"
+                  password: "openshift"
+
+    unclassified:
+      location:
+        url: "https://jenkins.__CLUSTER_DOMAIN__/"
+        adminAddress: "admin@rhtas-demo.local"
+
+      gitLabConnectionConfig:
+        connections:
+          - name: "gitlab"
+            url: "https://gitlab.__CLUSTER_DOMAIN__"
+            apiTokenId: "gitlab-api-token"
+            clientBuilderId: "autodetect"
+            ignoreCertificateErrors: true
+
+    jobs:
+      - script: |
+          multibranchPipelineJob('secure-app') {
+            displayName('Secure App — RHTAS Supply Chain')
+            description('Build once on develop, promote by signing through staging and production')
+            branchSources {
+              git {
+                id('secure-app-gitlab')
+                remote('https://gitlab.__CLUSTER_DOMAIN__/root/secure-app.git')
+                credentialsId('gitlab-api-token')
+              }
+            }
+            factory {
+              workflowBranchProjectFactory {
+                scriptPath('Jenkinsfile')
+              }
+            }
+            orphanedItemStrategy {
+              discardOldItems {
+                numToKeep(5)
+              }
+            }
+            triggers {
+              periodicFolderTrigger {
+                interval('2m')
+              }
+            }
+          }

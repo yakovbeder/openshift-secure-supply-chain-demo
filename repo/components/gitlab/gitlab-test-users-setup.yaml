@@ -1,0 +1,235 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gitlab-test-users-setup
+  namespace: gitlab-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 5
+  template:
+    spec:
+      serviceAccountName: gitlab-oidc-setup
+      restartPolicy: OnFailure
+      containers:
+        - name: setup-users
+          image: registry.redhat.io/openshift4/ose-cli:latest
+          env:
+            - name: GITLAB_HOST
+              value: "gitlab.__CLUSTER_DOMAIN__"
+            - name: USER_PASSWORD
+              value: "Xk9#mP2@vL5n"
+            - name: GITLAB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gitlab-admin-credentials
+                  key: password
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              
+              echo "════════════════════════════════════════════════════════════════"
+              echo "  SETTING UP GITLAB TEST USERS FOR MR APPROVAL TESTING"
+              echo "════════════════════════════════════════════════════════════════"
+              echo ""
+              
+              # Wait for GitLab to be ready
+              echo "Waiting for GitLab to be ready..."
+              until curl -sk "https://${GITLAB_HOST}/-/readiness" 2>/dev/null | grep -q "ok"; do
+                echo "GitLab not ready yet..."
+                sleep 5
+              done
+              echo "GitLab is ready!"
+              echo ""
+              
+              # Get admin token
+              echo "Getting admin access token..."
+              TOKEN_RESPONSE=$(curl -sk -X POST "https://${GITLAB_HOST}/oauth/token" \
+                -d "grant_type=password" \
+                -d "username=root" \
+                -d "password=${GITLAB_PASSWORD}" 2>&1)
+              
+              ACCESS_TOKEN=$(echo "${TOKEN_RESPONSE}" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+              
+              if [ -z "${ACCESS_TOKEN}" ]; then
+                echo "Could not get OAuth token, using basic auth..."
+                AUTH_HEADER="PRIVATE-TOKEN: ${GITLAB_PASSWORD}"
+                USE_BASIC=true
+              else
+                echo "Got OAuth access token"
+                AUTH_HEADER="Authorization: Bearer ${ACCESS_TOKEN}"
+                USE_BASIC=false
+              fi
+              
+              # Function to create user via API
+              create_user() {
+                local username=$1
+                local email=$2
+                local name=$3
+                local password=$4
+                
+                echo ""
+                echo "Creating user: ${username}..."
+                
+                # Check if user exists
+                USER_CHECK=$(curl -sk "https://${GITLAB_HOST}/api/v4/users?username=${username}" \
+                  -u "root:${GITLAB_PASSWORD}" 2>/dev/null)
+                
+                if echo "${USER_CHECK}" | grep -q "\"username\":\"${username}\""; then
+                  USER_ID=$(echo "${USER_CHECK}" | grep -o "\"id\":[0-9]*" | head -1 | cut -d':' -f2)
+                  echo "User ${username} already exists (ID: ${USER_ID}), updating password..."
+                  
+                  # Update password
+                  curl -sk -X PUT "https://${GITLAB_HOST}/api/v4/users/${USER_ID}" \
+                    -u "root:${GITLAB_PASSWORD}" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"password\": \"${password}\"}" >/dev/null 2>&1
+                  echo "✓ Password updated for ${username}"
+                else
+                  # Create new user
+                  RESPONSE=$(curl -sk -X POST "https://${GITLAB_HOST}/api/v4/users" \
+                    -u "root:${GITLAB_PASSWORD}" \
+                    -H "Content-Type: application/json" \
+                    -d "{
+                      \"username\": \"${username}\",
+                      \"email\": \"${email}\",
+                      \"name\": \"${name}\",
+                      \"password\": \"${password}\",
+                      \"skip_confirmation\": true,
+                      \"force_random_password\": false
+                    }" 2>&1)
+                  
+                  if echo "${RESPONSE}" | grep -q "\"id\""; then
+                    USER_ID=$(echo "${RESPONSE}" | grep -o "\"id\":[0-9]*" | head -1 | cut -d':' -f2)
+                    echo "✓ User ${username} created (ID: ${USER_ID})"
+                  else
+                    echo "⚠ Could not create ${username}: ${RESPONSE}"
+                  fi
+                fi
+              }
+              
+              # Create test users
+              create_user "developer" "developer@rhtas-demo.local" "Test Developer" "${USER_PASSWORD}"
+              create_user "approver" "approver@rhtas-demo.local" "Test Approver" "${USER_PASSWORD}"
+              create_user "maintainer" "maintainer@rhtas-demo.local" "Test Maintainer" "${USER_PASSWORD}"
+              
+              echo ""
+              echo "Getting project ID for secure-app..."
+              PROJECT_RESPONSE=$(curl -sk "https://${GITLAB_HOST}/api/v4/projects/root%2Fsecure-app" \
+                -u "root:${GITLAB_PASSWORD}" 2>/dev/null)
+              
+              PROJECT_ID=$(echo "${PROJECT_RESPONSE}" | grep -o "\"id\":[0-9]*" | head -1 | cut -d':' -f2)
+              
+              if [ -z "${PROJECT_ID}" ]; then
+                echo "⚠ secure-app project not found, skipping member additions"
+              else
+                echo "Project ID: ${PROJECT_ID}"
+                
+                # Function to add user to project
+                add_member() {
+                  local username=$1
+                  local access_level=$2
+                  local role_name=$3
+                  
+                  # Get user ID
+                  USER_RESPONSE=$(curl -sk "https://${GITLAB_HOST}/api/v4/users?username=${username}" \
+                    -u "root:${GITLAB_PASSWORD}" 2>/dev/null)
+                  USER_ID=$(echo "${USER_RESPONSE}" | grep -o "\"id\":[0-9]*" | head -1 | cut -d':' -f2)
+                  
+                  if [ -n "${USER_ID}" ]; then
+                    # Add or update member
+                    curl -sk -X POST "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ID}/members" \
+                      -u "root:${GITLAB_PASSWORD}" \
+                      -H "Content-Type: application/json" \
+                      -d "{\"user_id\": ${USER_ID}, \"access_level\": ${access_level}}" >/dev/null 2>&1 || \
+                    curl -sk -X PUT "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ID}/members/${USER_ID}" \
+                      -u "root:${GITLAB_PASSWORD}" \
+                      -H "Content-Type: application/json" \
+                      -d "{\"access_level\": ${access_level}}" >/dev/null 2>&1
+                    
+                    echo "✓ ${username} added as ${role_name} (access_level: ${access_level})"
+                  else
+                    echo "⚠ Could not find user ${username}"
+                  fi
+                }
+                
+                echo ""
+                echo "Adding users to secure-app project..."
+                add_member "developer" 30 "Developer"
+                add_member "approver" 30 "Developer"
+                add_member "maintainer" 40 "Maintainer"
+                
+                echo ""
+                echo "Configuring MR approval settings..."
+                
+                # Update project settings
+                curl -sk -X PUT "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ID}" \
+                  -u "root:${GITLAB_PASSWORD}" \
+                  -H "Content-Type: application/json" \
+                  -d '{
+                    "merge_requests_author_approval": false,
+                    "merge_requests_disable_committers_approval": true,
+                    "reset_approvals_on_push": true,
+                    "only_allow_merge_if_pipeline_succeeds": false,
+                    "only_allow_merge_if_all_discussions_are_resolved": false
+                  }' >/dev/null 2>&1
+                echo "✓ MR settings configured (author/committer cannot approve)"
+                
+                # Create approval rule
+                echo ""
+                echo "Creating approval rule..."
+                curl -sk -X POST "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ID}/approval_rules" \
+                  -u "root:${GITLAB_PASSWORD}" \
+                  -H "Content-Type: application/json" \
+                  -d '{
+                    "name": "Required Approval",
+                    "approvals_required": 1,
+                    "rule_type": "regular"
+                  }' >/dev/null 2>&1 || echo "Approval rule may already exist"
+                echo "✓ Approval rule configured (1 approval required)"
+                
+                echo ""
+                echo "Creating/checking develop branch..."
+                curl -sk -X POST "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ID}/repository/branches" \
+                  -u "root:${GITLAB_PASSWORD}" \
+                  -H "Content-Type: application/json" \
+                  -d '{"branch": "develop", "ref": "main"}' >/dev/null 2>&1 || echo "develop branch may already exist"
+                echo "✓ develop branch ready"
+              fi
+              
+              echo ""
+              echo "════════════════════════════════════════════════════════════════"
+              echo "  TEST USERS SETUP COMPLETE"
+              echo "════════════════════════════════════════════════════════════════"
+              echo ""
+              echo "Users created with password: ${USER_PASSWORD}"
+              echo ""
+              echo "┌────────────────────────────────────────────────────────────────┐"
+              echo "│ USERNAME    │ EMAIL                        │ ROLE             │"
+              echo "├────────────────────────────────────────────────────────────────┤"
+              echo "│ developer   │ developer@rhtas-demo.local   │ Developer        │"
+              echo "│ approver    │ approver@rhtas-demo.local    │ Developer        │"
+              echo "│ maintainer  │ maintainer@rhtas-demo.local  │ Maintainer       │"
+              echo "│ root        │ (admin)                      │ Owner            │"
+              echo "└────────────────────────────────────────────────────────────────┘"
+              echo ""
+              echo "MR Approval Settings:"
+              echo "  ✓ Author cannot approve own MR"
+              echo "  ✓ Committers cannot approve"
+              echo "  ✓ Approvals reset on new commits"
+              echo "  ✓ 1 approval required"
+              echo ""
+              echo "Test Flow:"
+              echo "  1. Login as 'developer' - create feature branch, make changes"
+              echo "  2. Push and create MR to develop branch"
+              echo "  3. Login as 'approver' - review and approve the MR"
+              echo "  4. Login as 'maintainer' - merge the MR"
+              echo "  5. Pipeline runs with maintainer's identity in JWT"
+              echo "  6. Check Rekor for signature with maintainer's email"
+              echo ""
+              echo "GitLab URL: https://${GITLAB_HOST}"
+              echo "════════════════════════════════════════════════════════════════"

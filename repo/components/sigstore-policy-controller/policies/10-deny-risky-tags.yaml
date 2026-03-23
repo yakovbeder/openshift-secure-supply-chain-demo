@@ -1,0 +1,61 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# DENY LIST POLICY: Block Risky/Mutable Tags
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Block images with risky or mutable tags
+# Mode: enforce
+# Priority: 5
+#
+# Blocked tags and reasons:
+# - :latest      - Mutable, unpredictable, no version control
+# - :dev         - Development build, may have debug code
+# - :test        - Test build, not for production
+# - :debug       - Contains debug symbols/tools
+# - :nightly     - Unstable daily build
+# - :edge        - Bleeding edge, untested
+# - :canary      - Experimental release
+# - :alpha       - Early pre-release
+# - :beta        - Pre-release, may have bugs
+# - :rc          - Release candidate, not final
+# - :snapshot    - Point-in-time build, not stable
+# - :unstable    - Explicitly marked unstable
+# - :experimental- Experimental features
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: deny-risky-tags
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: deny-list
+  annotations:
+    description: "Block images with risky or mutable tags"
+    category: "deny-list-tags"
+    priority: "5"
+spec:
+  images:
+    - glob: "**:latest"
+    - glob: "**:dev"
+    - glob: "**:develop"
+    - glob: "**:test"
+    - glob: "**:testing"
+    - glob: "**:debug"
+    - glob: "**:nightly"
+    - glob: "**:edge"
+    - glob: "**:canary"
+    - glob: "**:alpha"
+    - glob: "**:beta"
+    - glob: "**:rc"
+    - glob: "**:rc-*"
+    - glob: "**:snapshot"
+    - glob: "**:SNAPSHOT"
+    - glob: "**:unstable"
+    - glob: "**:experimental"
+    - glob: "**:temp"
+    - glob: "**:tmp"
+  authorities:
+    - static:
+        action: fail
+  mode: enforce

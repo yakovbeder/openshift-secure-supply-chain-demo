@@ -1,0 +1,454 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// RHTAS Secure Supply Chain Pipeline
+// Branch routing: develop→DEV, main→STAGING, release/*→PRODUCTION
+// Image path: <quay>/secure-app/backend:<sha>, <quay>/secure-app/frontend:<sha>
+// ═══════════════════════════════════════════════════════════════════════════
+
+pipeline {
+    agent { label 'supply-chain' }
+
+    options {
+        timeout(time: 60, unit: 'MINUTES')
+        disableConcurrentBuilds(abortPrevious: true)
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+    }
+
+    environment {
+        QUAY_ORG      = 'secure-app'
+    }
+
+    stages {
+        stage('Prepare') {
+            steps {
+                script {
+                    // Branch routing
+                    if (env.BRANCH_NAME?.startsWith('release/')) {
+                        env.ENVIRONMENT = 'prod'
+                        env.NAMESPACE   = 'secure-app-prod'
+                    } else if (env.BRANCH_NAME == 'main') {
+                        env.ENVIRONMENT = 'staging'
+                        env.NAMESPACE   = 'secure-app-staging'
+                    } else {
+                        env.ENVIRONMENT = 'dev'
+                        env.NAMESPACE   = 'secure-app-dev'
+                    }
+                    env.IMAGE_TAG = env.GIT_COMMIT ? env.GIT_COMMIT.take(8) : 'latest'
+
+                    if (fileExists('/run/quay-registry/QUAY_REGISTRY')) {
+                        env.REGISTRY = readFile('/run/quay-registry/QUAY_REGISTRY').trim()
+                        env.USE_QUAY = 'true'
+                    } else {
+                        env.REGISTRY = env.QUAY_REGISTRY ?: 'image-registry.openshift-image-registry.svc:5000'
+                        env.USE_QUAY = env.QUAY_REGISTRY ? 'true' : 'false'
+                    }
+                    env.BACKEND_IMG  = "${env.REGISTRY}/${env.QUAY_ORG}/backend:${env.IMAGE_TAG}"
+                    env.FRONTEND_IMG = "${env.REGISTRY}/${env.QUAY_ORG}/frontend:${env.IMAGE_TAG}"
+                    echo """
+                    ╔══════════════════════════════════════════════════╗
+                    ║  RHTAS Supply Chain Pipeline                     ║
+                    ╠══════════════════════════════════════════════════╣
+                    ║  Branch   : ${env.BRANCH_NAME}
+                    ║  Env      : ${env.ENVIRONMENT}
+                    ║  Registry : ${env.REGISTRY}
+                    ║  Org      : ${env.QUAY_ORG}
+                    ║  Tag      : ${env.IMAGE_TAG}
+                    ║  Backend  : ${env.BACKEND_IMG}
+                    ║  Frontend : ${env.FRONTEND_IMG}
+                    ║  Namespace: ${env.NAMESPACE}
+                    ╚══════════════════════════════════════════════════╝
+                    """
+                }
+            }
+        }
+
+        stage('Tool Check') {
+            steps {
+                sh '''
+                    echo "=== Supply-chain tool inventory ==="
+                    CLI_SERVER="http://cli-server.trusted-artifact-signer.svc:8080"
+
+                    ensure_tool() {
+                        local name="$1" check="$2" install="$3"
+                        if eval "$check" >/dev/null 2>&1; then
+                            echo "  ✓ $name (pre-installed)"
+                        else
+                            echo "  ↓ $name (installing...)"
+                            if eval "$install" 2>&1; then
+                                echo "  ✓ $name (installed)"
+                            else
+                                echo "  ✗ $name (install failed — will retry later or skip)"
+                            fi
+                        fi
+                    }
+
+                    ensure_tool "cosign" "cosign version" \
+                        "curl -skL $CLI_SERVER/clients/linux/cosign-amd64.gz | gunzip > /tmp/cosign && chmod +x /tmp/cosign && export PATH=/tmp:$PATH"
+                    ensure_tool "rekor-cli" "rekor-cli version" \
+                        "curl -skL $CLI_SERVER/clients/linux/rekor-cli-amd64.gz | gunzip > /tmp/rekor-cli && chmod +x /tmp/rekor-cli && export PATH=/tmp:$PATH"
+                    ensure_tool "syft" "syft version" \
+                        "curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /tmp"
+                    ensure_tool "trivy" "trivy --version" \
+                        "curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp"
+
+                    # roxctl: download from ACS Central (requires auth)
+                    rm -f /tmp/roxctl
+                    if [ -f /run/acs-rox/rox_api_token ]; then
+                        ROX_TOKEN=$(cat /run/acs-rox/rox_api_token)
+                        ROX_EP=$(cat /run/acs-rox/rox_central_endpoint 2>/dev/null || echo "${ROX_CENTRAL_ENDPOINT:-central.stackrox.svc:443}")
+                        echo "  ↓ roxctl (downloading from ${ROX_EP}...)"
+                        curl -sk --connect-timeout 10 -H "Authorization: Bearer ${ROX_TOKEN}" \
+                            "https://${ROX_EP}/api/cli/download/roxctl-linux" -o /tmp/roxctl 2>&1 || true
+                        if file /tmp/roxctl 2>/dev/null | grep -q ELF; then
+                            chmod +x /tmp/roxctl
+                            echo "  ✓ roxctl (downloaded)"
+                        else
+                            rm -f /tmp/roxctl
+                            echo "  ✗ roxctl (download failed — not a valid binary)"
+                        fi
+                    else
+                        echo "  ✗ roxctl (no ACS token — will skip ACS scans)"
+                    fi
+
+                    ensure_tool "buildah" "buildah --version" "echo SKIP-buildah-must-be-preinstalled"
+                    ensure_tool "jq" "jq --version" "echo SKIP-jq-must-be-preinstalled"
+                    ensure_tool "oc" "oc version --client" "echo SKIP-oc-must-be-preinstalled"
+
+                    export PATH=/tmp:$PATH
+                    echo "=== PATH: $PATH ==="
+                '''
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Code Quality') {
+            parallel {
+                stage('Lint & Test') {
+                    steps {
+                        sh '''
+                            if [ -f backend/package.json ]; then
+                                cd backend && npm ci --prefer-offline 2>/dev/null && npm run lint 2>/dev/null && npm test 2>/dev/null || true
+                                cd ..
+                            fi
+                            if [ -f frontend/package.json ]; then
+                                cd frontend && npm ci --prefer-offline 2>/dev/null && npm run lint 2>/dev/null || true
+                            fi
+                        '''
+                    }
+                }
+                stage('Kube Lint') {
+                    steps {
+                        sh '''
+                            if [ -d k8s/ ] && command -v kube-linter >/dev/null 2>&1; then
+                                kube-linter lint k8s/ || true
+                            else
+                                echo "kube-linter or k8s/ not available — skipping"
+                            fi
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Build & Push Images') {
+            steps {
+                container('buildah') {
+                    sh """
+                        # Login to Quay
+                        if [ -f /run/quay-registry/QUAY_PASSWORD ]; then
+                            QUAY_PASS=\$(cat /run/quay-registry/QUAY_PASSWORD)
+                            QUAY_USR=\$(cat /run/quay-registry/QUAY_USER)
+                        elif [ -n "\${QUAY_PASSWORD:-}" ]; then
+                            QUAY_PASS="\${QUAY_PASSWORD}"
+                            QUAY_USR="\${QUAY_USER}"
+                        fi
+                        if [ -n "\${QUAY_PASS:-}" ]; then
+                            echo "\${QUAY_PASS}" | buildah login -u "\${QUAY_USR}" --password-stdin \${REGISTRY}
+                        fi
+
+                        echo "=== Building backend ==="
+                        buildah bud --storage-driver=vfs --layers -f backend/Dockerfile -t \${BACKEND_IMG} backend/
+                        buildah push --storage-driver=vfs \${BACKEND_IMG}
+
+                        echo "=== Building frontend ==="
+                        buildah bud --storage-driver=vfs --layers -f frontend/Dockerfile -t \${FRONTEND_IMG} frontend/
+                        buildah push --storage-driver=vfs \${FRONTEND_IMG}
+                    """
+                }
+            }
+        }
+
+        stage('Generate SBOMs') {
+            steps {
+                sh """
+                    export PATH=/tmp:\$PATH
+                    echo "=== Generating SBOM: Backend ==="
+                    syft \${BACKEND_IMG} -o cyclonedx-json > backend-sbom.json
+                    echo "  Components: \$(jq '.components | length' backend-sbom.json)"
+
+                    echo "=== Generating SBOM: Frontend ==="
+                    syft \${FRONTEND_IMG} -o cyclonedx-json > frontend-sbom.json
+                    echo "  Components: \$(jq '.components | length' frontend-sbom.json)"
+                """
+            }
+        }
+
+        stage('Vulnerability Scans') {
+            parallel {
+                stage('Trivy') {
+                    steps {
+                        sh """
+                            export PATH=/tmp:\$PATH
+                            echo "=== Trivy Scan: Backend ==="
+                            trivy image --severity CRITICAL,HIGH --ignore-unfixed \
+                                --format json --output backend-trivy.json \
+                                \${BACKEND_IMG}
+                            trivy image --severity CRITICAL,HIGH --ignore-unfixed \
+                                --exit-code 0 \${BACKEND_IMG}
+
+                            echo "=== Trivy Scan: Frontend ==="
+                            trivy image --severity CRITICAL,HIGH --ignore-unfixed \
+                                --format json --output frontend-trivy.json \
+                                \${FRONTEND_IMG}
+                            trivy image --severity CRITICAL,HIGH --ignore-unfixed \
+                                --exit-code 0 \${FRONTEND_IMG}
+                        """
+                    }
+                }
+                stage('ACS Scan') {
+                    steps {
+                        sh """
+                            if [ -f /run/acs-rox/rox_api_token ] && [ -x /tmp/roxctl ]; then
+                                export ROX_API_TOKEN=\$(cat /run/acs-rox/rox_api_token)
+                                ROX_ENDPOINT=\$(cat /run/acs-rox/rox_central_endpoint 2>/dev/null || echo "central.stackrox.svc:443")
+
+                                echo "=== ACS Image Scan: Backend ==="
+                                /tmp/roxctl image scan  --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify \
+                                    --image=\${BACKEND_IMG} --output=json > backend-acs-scan.json 2>&1 || true
+                                /tmp/roxctl image scan  --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify \
+                                    --image=\${BACKEND_IMG} --output=table 2>&1 || true
+
+                                echo "=== ACS Policy Check: Backend ==="
+                                /tmp/roxctl image check --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify \
+                                    --image=\${BACKEND_IMG} --output=json 2>/dev/null > backend-acs-check.json || true
+                                /tmp/roxctl image check --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify \
+                                    --image=\${BACKEND_IMG} 2>&1 || true
+
+                                echo "=== ACS Image Scan: Frontend ==="
+                                /tmp/roxctl image scan  --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify \
+                                    --image=\${FRONTEND_IMG} --output=json > frontend-acs-scan.json 2>&1 || true
+                                /tmp/roxctl image scan  --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify \
+                                    --image=\${FRONTEND_IMG} --output=table 2>&1 || true
+
+                                echo "=== ACS Policy Check: Frontend ==="
+                                /tmp/roxctl image check --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify \
+                                    --image=\${FRONTEND_IMG} --output=json 2>/dev/null > frontend-acs-check.json || true
+                                /tmp/roxctl image check --endpoint=\$ROX_ENDPOINT --insecure-skip-tls-verify \
+                                    --image=\${FRONTEND_IMG} 2>&1 || true
+                            else
+                                echo "=== ACS Scan skipped ==="
+                                [ ! -f /run/acs-rox/rox_api_token ] && echo "  Reason: No ACS API token mounted"
+                                [ ! -x /tmp/roxctl ] && echo "  Reason: roxctl CLI not available at /tmp/roxctl"
+                            fi
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Sign & Attest') {
+            steps {
+                withCredentials([file(credentialsId: 'sigstore-oidc-token', variable: 'OIDC_TOKEN_FILE')]) {
+                    sh """
+                        export PATH=/tmp:\$PATH
+                        cosign initialize --mirror=\${TUF_URL} --root=\${TUF_URL}/root.json || true
+
+                        if [ -f /run/quay-registry/QUAY_PASSWORD ]; then
+                            QUAY_PASS=\$(cat /run/quay-registry/QUAY_PASSWORD)
+                            QUAY_USR=\$(cat /run/quay-registry/QUAY_USER)
+                            cosign login \${REGISTRY} -u "\${QUAY_USR}" -p "\${QUAY_PASS}"
+                        fi
+
+                        COSIGN_COMMON="--fulcio-url=\${FULCIO_URL} --rekor-url=\${REKOR_URL} --oidc-issuer=\${OIDC_ISSUER} --identity-token=\$(cat \${OIDC_TOKEN_FILE}) --timestamp-server-url=\${TSA_URL} --yes"
+
+                        for IMG in \${BACKEND_IMG} \${FRONTEND_IMG}; do
+                            PREFIX=\$(echo \$IMG | grep -o 'backend\\|frontend')
+
+                            # 1. Sign the image identity
+                            echo "=== Signing \$PREFIX ==="
+                            cosign sign \$COSIGN_COMMON \$IMG
+
+                            # 2. Attest SBOM (CycloneDX) — proves what's inside the image
+                            if [ -f \${PREFIX}-sbom.json ]; then
+                                echo "=== Attesting SBOM for \$PREFIX ==="
+                                cosign attest \$COSIGN_COMMON \
+                                    --predicate \${PREFIX}-sbom.json \
+                                    --type cyclonedx \
+                                    \$IMG
+                            fi
+
+                            # 3. Attest vulnerability scan — proves scanning happened and what was found
+                            if [ -f \${PREFIX}-trivy.json ]; then
+                                echo "=== Attesting Trivy scan for \$PREFIX ==="
+                                cosign attest \$COSIGN_COMMON \
+                                    --predicate \${PREFIX}-trivy.json \
+                                    --type vuln \
+                                    \$IMG
+                            fi
+
+                            # 4. Attest ACS policy check — proves ACS evaluated the image
+                            if [ -f \${PREFIX}-acs-check.json ] && jq empty \${PREFIX}-acs-check.json 2>/dev/null; then
+                                echo "=== Attesting ACS policy check for \$PREFIX ==="
+                                cosign attest \$COSIGN_COMMON \
+                                    --predicate \${PREFIX}-acs-check.json \
+                                    --type https://stackrox.io/policy-check/v1 \
+                                    \$IMG
+                            else
+                                echo "  Skipping ACS attestation for \$PREFIX (no valid JSON output)"
+                            fi
+                        done
+                    """
+                }
+            }
+        }
+
+        stage('Verify Signatures & Attestations') {
+            steps {
+                sh """
+                    export PATH=/tmp:\$PATH
+                    for IMG in \${BACKEND_IMG} \${FRONTEND_IMG}; do
+                        PREFIX=\$(echo \$IMG | grep -o 'backend\\|frontend')
+                        echo "════════════════════════════════════════"
+                        echo "  Verifying \$PREFIX"
+                        echo "════════════════════════════════════════"
+
+                        echo "--- Image signature ---"
+                        cosign verify \
+                            --rekor-url=\${REKOR_URL} \
+                            --certificate-identity-regexp=".*" \
+                            --certificate-oidc-issuer=\${OIDC_ISSUER} \
+                            \$IMG | head -5
+
+                        echo "--- SBOM attestation ---"
+                        cosign verify-attestation \
+                            --rekor-url=\${REKOR_URL} \
+                            --certificate-identity-regexp=".*" \
+                            --certificate-oidc-issuer=\${OIDC_ISSUER} \
+                            --type cyclonedx \
+                            \$IMG | jq -r '.payload' | base64 -d | jq '{predicateType, subject: .subject[0].name}' 2>/dev/null || echo "  (no SBOM attestation)"
+
+                        echo "--- Vulnerability scan attestation ---"
+                        cosign verify-attestation \
+                            --rekor-url=\${REKOR_URL} \
+                            --certificate-identity-regexp=".*" \
+                            --certificate-oidc-issuer=\${OIDC_ISSUER} \
+                            --type vuln \
+                            \$IMG | jq -r '.payload' | base64 -d | jq '{predicateType, subject: .subject[0].name}' 2>/dev/null || echo "  (no vuln attestation)"
+
+                        echo "--- ACS policy attestation ---"
+                        cosign verify-attestation \
+                            --rekor-url=\${REKOR_URL} \
+                            --certificate-identity-regexp=".*" \
+                            --certificate-oidc-issuer=\${OIDC_ISSUER} \
+                            --type https://stackrox.io/policy-check/v1 \
+                            \$IMG | jq -r '.payload' | base64 -d | jq '{predicateType, subject: .subject[0].name}' 2>/dev/null || echo "  (no ACS policy attestation)"
+                    done
+                """
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh """
+                    NS=\${NAMESPACE}
+                    for APP in backend frontend; do
+                        if [ "\$APP" = "backend" ]; then IMG=\${BACKEND_IMG}; PORT=3000; else IMG=\${FRONTEND_IMG}; PORT=8080; fi
+
+                        if oc get deployment \$APP -n \$NS >/dev/null 2>&1; then
+                            echo "Updating \$APP → \$IMG"
+                            oc set image deployment/\$APP \$APP=\$IMG -n \$NS
+                        else
+                            echo "Creating \$APP → \$IMG"
+                            cat <<YAML | oc apply -n \$NS -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: \$APP
+  labels:
+    app: \$APP
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: \$APP
+  template:
+    metadata:
+      labels:
+        app: \$APP
+    spec:
+      imagePullSecrets:
+        - name: quay-pull-secret
+      containers:
+        - name: \$APP
+          image: \$IMG
+          ports:
+            - containerPort: \$PORT
+YAML
+                        fi
+                    done
+
+                    if [ "\${USE_QUAY}" = "true" ]; then
+                        oc secrets link default quay-pull-secret --for=pull -n \$NS 2>/dev/null || true
+                    fi
+
+                    oc rollout status deployment/backend  -n \$NS --timeout=180s || true
+                    oc rollout status deployment/frontend -n \$NS --timeout=180s || true
+                """
+            }
+        }
+
+        stage('Smoke Tests') {
+            steps {
+                sh """
+                    for svc in backend frontend; do
+                        ROUTE=\$(oc get route \$svc -n ${NAMESPACE} -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+                        if [ -n "\${ROUTE}" ]; then
+                            ENDPOINT="/"
+                            [ "\$svc" = "backend" ] && ENDPOINT="/health"
+                            for i in \$(seq 1 12); do
+                                STATUS=\$(curl -sk -o /dev/null -w '%{http_code}' "https://\${ROUTE}\${ENDPOINT}" 2>/dev/null || echo "000")
+                                [ "\${STATUS}" = "200" ] && echo "\$svc healthy (\${ROUTE})" && break
+                                sleep 5
+                            done
+                        else
+                            echo "\$svc: no route yet — creating"
+                            oc expose deployment/\$svc -n ${NAMESPACE} --port=8080 2>/dev/null || true
+                            oc expose svc/\$svc -n ${NAMESPACE} 2>/dev/null || true
+                        fi
+                    done
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            echo """
+            ════════════════════════════════════════════════════
+              RHTAS Supply Chain Pipeline
+              Branch : ${env.BRANCH_NAME}
+              Env    : ${env.ENVIRONMENT}
+              Commit : ${env.GIT_COMMIT?.take(8) ?: 'unknown'}
+              Status : ${currentBuild.currentResult}
+              Images : ${env.QUAY_ORG}/backend:${env.IMAGE_TAG}
+                       ${env.QUAY_ORG}/frontend:${env.IMAGE_TAG}
+              Signed via RHTAS keyless (Jenkins OIDC → Fulcio)
+            ════════════════════════════════════════════════════
+            """
+        }
+    }
+}

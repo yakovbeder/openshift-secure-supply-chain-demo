@@ -1,0 +1,21 @@
+# Credentials generated at deploy time
+.credentials.txt
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Editor files
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Temp files from domain replacement
+*.bak
+
+# Git repos created inside repo/ during spin-demo.sh
+repo/.git/
+repo/apps-projects/secure-app/.git/

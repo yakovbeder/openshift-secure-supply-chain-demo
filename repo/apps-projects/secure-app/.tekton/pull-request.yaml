@@ -1,0 +1,160 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: secure-app-pull-request
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[pull_request]"
+    pipelinesascode.tekton.dev/on-target-branch: "[main, develop]"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+  labels:
+    app.kubernetes.io/part-of: secure-app
+    environment: ci
+spec:
+  params:
+    - name: GIT_REPO
+      value: "{{ repo_url }}"
+    - name: GIT_REVISION
+      value: "{{ revision }}"
+    - name: SOURCE_BRANCH
+      value: "{{ source_branch }}"
+    - name: TARGET_BRANCH
+      value: "{{ target_branch }}"
+
+  pipelineSpec:
+    params:
+      - name: GIT_REPO
+        type: string
+      - name: GIT_REVISION
+        type: string
+      - name: SOURCE_BRANCH
+        type: string
+      - name: TARGET_BRANCH
+        type: string
+
+    workspaces:
+      - name: source
+      - name: artifacts
+
+    tasks:
+      # ══════════════════════════════════════════════════════════════
+      # CLONE
+      # ══════════════════════════════════════════════════════════════
+      - name: git-clone
+        taskRef:
+          name: git-clone
+          kind: ClusterTask
+        params:
+          - name: url
+            value: $(params.GIT_REPO)
+          - name: revision
+            value: $(params.GIT_REVISION)
+          - name: deleteExisting
+            value: "true"
+        workspaces:
+          - name: output
+            workspace: source
+
+      # ══════════════════════════════════════════════════════════════
+      # CODE QUALITY (parallel)
+      # ══════════════════════════════════════════════════════════════
+      - name: lint-and-test
+        runAfter: [git-clone]
+        taskRef:
+          name: lint-test
+        params:
+          - name: COMPONENT
+            value: "all"
+        workspaces:
+          - name: source
+            workspace: source
+
+      - name: kube-lint
+        runAfter: [git-clone]
+        taskRef:
+          name: kube-linter
+          kind: ClusterTask
+        params:
+          - name: MANIFESTS_PATH
+            value: "k8s"
+          - name: FAIL_ON_ERROR
+            value: "true"
+        workspaces:
+          - name: source
+            workspace: source
+          - name: artifacts
+            workspace: artifacts
+
+      # ══════════════════════════════════════════════════════════════
+      # BUILD CHECK (no push — validate Dockerfiles compile)
+      # ══════════════════════════════════════════════════════════════
+      - name: build-check-backend
+        runAfter: [lint-and-test]
+        taskRef:
+          name: build-image
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "backend"
+          - name: CONTEXT
+            value: "backend"
+          - name: DOCKERFILE
+            value: "backend/Dockerfile"
+          - name: IMAGE
+            value: "image-registry.openshift-image-registry.svc:5000/ci-temp/backend"
+          - name: IMAGE_TAG
+            value: "pr-$(params.GIT_REVISION)"
+        workspaces:
+          - name: source
+            workspace: source
+
+      - name: build-check-frontend
+        runAfter: [lint-and-test]
+        taskRef:
+          name: build-image
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "frontend"
+          - name: CONTEXT
+            value: "frontend"
+          - name: DOCKERFILE
+            value: "frontend/Dockerfile"
+          - name: IMAGE
+            value: "image-registry.openshift-image-registry.svc:5000/ci-temp/frontend"
+          - name: IMAGE_TAG
+            value: "pr-$(params.GIT_REVISION)"
+        workspaces:
+          - name: source
+            workspace: source
+
+    finally:
+      - name: report
+        taskSpec:
+          steps:
+            - name: pr-status
+              image: registry.redhat.io/ubi9/ubi-minimal:latest
+              script: |
+                #!/bin/bash
+                echo "════════════════════════════════════════════════════"
+                echo "  PULL REQUEST CI CHECK"
+                echo "  Source : $(params.SOURCE_BRANCH) → $(params.TARGET_BRANCH)"
+                echo "  Commit : $(params.GIT_REVISION)"
+                echo "  Status : $(tasks.status)"
+                echo "════════════════════════════════════════════════════"
+
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi
+    - name: artifacts
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 256Mi

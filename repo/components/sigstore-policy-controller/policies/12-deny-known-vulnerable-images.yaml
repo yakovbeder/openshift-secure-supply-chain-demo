@@ -1,0 +1,125 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# DENY LIST POLICY: Block Known Vulnerable Images
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Block specific images with known critical vulnerabilities
+# Mode: warn (change to enforce after review)
+# Priority: 6
+#
+# Categories:
+#
+# 1. LOG4J VULNERABLE VERSIONS (CVE-2021-44228, CVE-2021-45046)
+#    - log4j:2.14.* - Remote Code Execution
+#    - log4j:2.15.0 - Incomplete fix
+#    - log4j:2.16.0 - DoS vulnerability
+#
+# 2. END-OF-LIFE LANGUAGE RUNTIMES
+#    - python:2.7*  - EOL January 2020
+#    - node:8*      - EOL December 2019
+#    - node:10*     - EOL April 2021
+#    - node:12*     - EOL April 2022
+#    - ruby:2.5*    - EOL March 2021
+#    - golang:1.15* - EOL August 2021
+#    - golang:1.16* - EOL March 2022
+#
+# 3. END-OF-LIFE OS BASE IMAGES
+#    - centos:6*    - EOL November 2020
+#    - centos:7*    - EOL June 2024
+#    - ubuntu:14.04 - EOL April 2019
+#    - ubuntu:16.04 - EOL April 2021
+#    - ubuntu:18.04 - EOL April 2023
+#    - debian:8*    - EOL June 2020
+#    - debian:9*    - EOL June 2022
+#    - alpine:3.12* - EOL May 2022
+#    - alpine:3.13* - EOL November 2022
+#
+# MAINTENANCE: Add new entries when CVEs are disclosed or images become EOL.
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: deny-known-vulnerable-images
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: deny-list
+  annotations:
+    description: "Block specific images with known critical vulnerabilities"
+    category: "deny-list-vulnerabilities"
+    priority: "6"
+    last-updated: "2025-12-12"
+spec:
+  images:
+    # ──────────────────────────────────────────────────────────────────────────
+    # Log4j vulnerable versions (CVE-2021-44228 - Log4Shell)
+    # ──────────────────────────────────────────────────────────────────────────
+    - glob: "**/log4j:2.14.*"
+    - glob: "**/log4j:2.15.0"
+    - glob: "**/log4j:2.16.0"
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # EOL Python
+    # ──────────────────────────────────────────────────────────────────────────
+    - glob: "**/python:2.*"
+    - glob: "**/python:2.7*"
+    - glob: "docker.io/library/python:2*"
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # EOL Node.js
+    # ──────────────────────────────────────────────────────────────────────────
+    - glob: "**/node:8*"
+    - glob: "**/node:10*"
+    - glob: "**/node:12*"
+    - glob: "docker.io/library/node:8*"
+    - glob: "docker.io/library/node:10*"
+    - glob: "docker.io/library/node:12*"
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # EOL Ruby
+    # ──────────────────────────────────────────────────────────────────────────
+    - glob: "**/ruby:2.5*"
+    - glob: "**/ruby:2.6*"
+    - glob: "docker.io/library/ruby:2.5*"
+    - glob: "docker.io/library/ruby:2.6*"
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # EOL Go
+    # ──────────────────────────────────────────────────────────────────────────
+    - glob: "**/golang:1.15*"
+    - glob: "**/golang:1.16*"
+    - glob: "**/golang:1.17*"
+    - glob: "docker.io/library/golang:1.15*"
+    - glob: "docker.io/library/golang:1.16*"
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # EOL CentOS
+    # ──────────────────────────────────────────────────────────────────────────
+    - glob: "**/centos:6*"
+    - glob: "**/centos:7*"
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # EOL Ubuntu
+    # ──────────────────────────────────────────────────────────────────────────
+    - glob: "**/ubuntu:14.04*"
+    - glob: "**/ubuntu:16.04*"
+    - glob: "**/ubuntu:18.04*"
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # EOL Debian
+    # ──────────────────────────────────────────────────────────────────────────
+    - glob: "**/debian:8*"
+    - glob: "**/debian:9*"
+    - glob: "**/debian:stretch*"
+    
+    # ──────────────────────────────────────────────────────────────────────────
+    # EOL Alpine
+    # ──────────────────────────────────────────────────────────────────────────
+    - glob: "**/alpine:3.12*"
+    - glob: "**/alpine:3.13*"
+    - glob: "**/alpine:3.14*"
+    
+  authorities:
+    - static:
+        action: fail
+  mode: enforce

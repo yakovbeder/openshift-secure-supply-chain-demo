@@ -1,0 +1,68 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# RHTAS Demo - Enabled Components List
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# This is a SIMPLE list of components to deploy.
+#
+# How it works:
+#   - Add component name to the list → Component is deployed
+#   - Remove component name from the list → Component is removed
+#   - ArgoCD ApplicationSet reads this list and generates Applications
+#
+# Convention:
+#   Component "gitlab" → Deploys from "components/gitlab/"
+#   Component "rhtas-operator" → Deploys from "components/rhtas-operator/"
+#
+# Dependencies (sync order) are defined via annotations in component manifests
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+components:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # FOUNDATION
+  # ─────────────────────────────────────────────────────────────────────────────
+  - sealed-secrets               # Secret encryption (wave 0)
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # INFRASTRUCTURE
+  # ─────────────────────────────────────────────────────────────────────────────
+  - mysql                        # Database for Trillian/Rekor (wave 2)
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CI/CD PLATFORM (Jenkins only — no Tekton for this deployment)
+  # ─────────────────────────────────────────────────────────────────────────────
+  - jenkins                      # Jenkins controller with OIDC Provider + K8s agents
+  - jenkins-app-namespaces       # App namespaces + rhtas-config + Jenkins RBAC
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SOURCE CONTROL
+  # ─────────────────────────────────────────────────────────────────────────────
+  - gitlab                       # GitLab CE — hosts secure-app source code only
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # SECURITY (RHTAS + ACS)
+  # ─────────────────────────────────────────────────────────────────────────────
+  - rhtas-operator               # RHTAS operator subscription
+  - rhtas-securesign             # SecureSign (Fulcio, Rekor, TUF, TSA) + 3 OIDC issuers
+  - acs                          # Red Hat ACS (Central, Scanner, SecuredCluster, admission control)
+  - sigstore-policy-controller   # Attestation-based admission (SBOM, vuln scan, ACS policy check)
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # ARTIFACT MANAGEMENT (Red Hat Quay)
+  # ─────────────────────────────────────────────────────────────────────────────
+  - quay                         # Red Hat Quay registry
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # DISABLED (Jenkins is the pipeline engine; no Tekton)
+  # ─────────────────────────────────────────────────────────────────────────────
+  # - openshift-pipelines        # Not used — Jenkins runs pipelines
+  # - tekton-cluster-tasks       # Not used — Jenkins runs pipelines
+  # - policy-controller-rbac     # Merged into sigstore-policy-controller (SCC there)
+  # - pipelines-as-code         # Replaced by jenkins-app-namespaces + Jenkins
+  # - rhoai-operator             # ML platform — not in scope
+  # - quay                       # Using internal registry
+  # - image-updater              # Not needed
+  # - monitoring                 # Not needed for demo
+  # - rhdh-operator              # Developer Hub — not in scope
+  # - rhdh-instance              # Developer Hub — not in scope
+  # - platform                   # Platform config — not in scope

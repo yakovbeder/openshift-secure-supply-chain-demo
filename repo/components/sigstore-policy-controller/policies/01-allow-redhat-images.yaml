@@ -1,0 +1,37 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# ALLOW LIST POLICY: Red Hat Official Images
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Allow Red Hat official images without signature verification
+# Mode: enforce
+# Priority: 1 (evaluated first)
+#
+# These images are trusted because:
+# - Already signed by Red Hat
+# - Certified and scanned for vulnerabilities
+# - Part of the OpenShift ecosystem
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: allow-redhat-images
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: allow-list
+  annotations:
+    description: "Allow Red Hat official images without signature verification"
+    category: "allow-list"
+    priority: "1"
+spec:
+  images:
+    - glob: "registry.redhat.io/**"
+    - glob: "registry.access.redhat.com/**"
+    - glob: "quay.io/openshift-release-dev/**"
+    - glob: "quay.io/redhat-*/**"
+    - glob: "image-registry.openshift-image-registry.svc:5000/**"
+  authorities:
+    - static:
+        action: pass
+  mode: enforce

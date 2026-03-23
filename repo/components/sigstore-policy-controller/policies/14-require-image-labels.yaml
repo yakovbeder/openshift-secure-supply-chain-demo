@@ -1,0 +1,58 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# COMPLIANCE POLICY: Require Image Labels
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Require images to have specific OCI labels for compliance
+# Mode: warn (requires label verification support)
+# Priority: 14
+#
+# Required labels for compliance:
+# - org.opencontainers.image.source: Source code repository
+# - org.opencontainers.image.revision: Git commit SHA
+# - org.opencontainers.image.created: Build timestamp
+# - org.opencontainers.image.authors: Maintainer contact
+# - org.opencontainers.image.version: Semantic version
+#
+# NOTE: This policy is a placeholder. Sigstore Policy Controller
+# currently doesn't support label verification directly.
+# Consider using OPA/Gatekeeper for label policies.
+#
+# Alternative: Use attestations to verify build metadata
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-image-labels
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: compliance
+  annotations:
+    description: "Require OCI labels for image compliance (placeholder)"
+    category: "compliance-labels"
+    priority: "14"
+    note: "Label verification not natively supported - use with attestations"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      # Custom attestation that includes label verification
+      attestations:
+        - name: build-metadata
+          predicateType: https://example.com/build-metadata/v1
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://example.com/build-metadata/v1"
+  mode: warn
+
+

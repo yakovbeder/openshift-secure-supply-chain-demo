@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - subscription.yaml
+  - gitlab.yaml
+  - gitlab-admin-secret.yaml
+  - gitlab-password-reset.yaml
+  - gitlab-oidc-setup.yaml
+  - gitlab-secure-app-setup.yaml
+  - gitlab-test-users-setup.yaml

@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins
+  namespace: jenkins
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app: jenkins
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: jenkins
+  template:
+    metadata:
+      labels:
+        app: jenkins
+    spec:
+      serviceAccountName: jenkins
+      containers:
+        - name: jenkins
+          image: image-registry.openshift-image-registry.svc:5000/openshift/jenkins:2
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+            - containerPort: 50000
+              name: agent
+              protocol: TCP
+          env:
+            - name: JENKINS_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: jenkins-admin-credentials
+                  key: JENKINS_ADMIN_USER
+            - name: JENKINS_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: jenkins-admin-credentials
+                  key: JENKINS_ADMIN_PASSWORD
+            - name: OPENSHIFT_ENABLE_OAUTH
+              value: "true"
+            - name: OPENSHIFT_ENABLE_REDIRECT_PROMPT
+              value: "true"
+            - name: DISABLE_ADMINISTRATIVE_MONITORS
+              value: "false"
+            - name: KUBERNETES_MASTER
+              value: "https://kubernetes.default.svc"
+            - name: KUBERNETES_TRUST_CERTIFICATES
+              value: "true"
+            - name: JENKINS_SERVICE_NAME
+              value: "jenkins"
+            - name: JNLP_SERVICE_NAME
+              value: "jenkins-agent"
+            - name: JENKINS_UC_INSECURE
+              value: "false"
+            - name: CASC_JENKINS_CONFIG
+              value: "/var/jenkins_config/jenkins.yaml"
+            - name: INSTALL_PLUGINS
+              value: "gitlab-plugin:1.6.0,oidc-provider:62.vd67c19f76766"
+            - name: GIT_SSL_NO_VERIFY
+              value: "true"
+            - name: JAVA_OPTS
+              value: "-Xms2g -Xmx4g -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+DisableExplicitGC"
+            # RHTAS endpoints (consumed by Jenkinsfiles)
+            - name: TUF_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: rhtas-config
+                  key: TUF_URL
+            - name: FULCIO_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: rhtas-config
+                  key: FULCIO_URL
+            - name: REKOR_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: rhtas-config
+                  key: REKOR_URL
+            - name: COSIGN_YES
+              value: "true"
+            # Quay registry (optional; created by quay-registry-setup Job)
+            - name: QUAY_REGISTRY
+              valueFrom:
+                secretKeyRef:
+                  name: quay-registry-credentials
+                  key: QUAY_REGISTRY
+                  optional: true
+            - name: QUAY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: quay-registry-credentials
+                  key: QUAY_USER
+                  optional: true
+            - name: QUAY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: quay-registry-credentials
+                  key: QUAY_PASSWORD
+                  optional: true
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2"
+            limits:
+              memory: "8Gi"
+              cpu: "4"
+          volumeMounts:
+            - name: jenkins-home
+              mountPath: /var/lib/jenkins
+            - name: jenkins-config
+              mountPath: /var/jenkins_config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 180
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: jenkins-home
+          persistentVolumeClaim:
+            claimName: jenkins-home
+        - name: jenkins-config
+          configMap:
+            name: jenkins-config

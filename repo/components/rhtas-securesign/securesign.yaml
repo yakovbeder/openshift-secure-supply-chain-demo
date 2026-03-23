@@ -1,0 +1,57 @@
+apiVersion: rhtas.redhat.com/v1alpha1
+kind: Securesign
+metadata:
+  name: securesign-sample
+  namespace: trusted-artifact-signer
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  fulcio:
+    externalAccess:
+      enabled: true
+    certificate:
+      organizationName: Red Hat
+      organizationEmail: rhtas-demo@redhat.com
+    config:
+      OIDCIssuers:
+        - ClientID: "sigstore"
+          Issuer: "https://kubernetes.default.svc"
+          IssuerURL: "https://kubernetes.default.svc"
+          Type: "kubernetes"
+        - ClientID: "sigstore"
+          Issuer: "https://gitlab.__CLUSTER_DOMAIN__"
+          IssuerURL: "https://gitlab.__CLUSTER_DOMAIN__"
+          Type: "gitlab-pipeline"
+        - ClientID: "sigstore"
+          Issuer: "https://jenkins.__CLUSTER_DOMAIN__/oidc"
+          IssuerURL: "https://jenkins.__CLUSTER_DOMAIN__/oidc"
+          Type: "uri"
+          SubjectDomain: "https://jenkins.__CLUSTER_DOMAIN__"
+  rekor:
+    externalAccess:
+      enabled: true
+    pvc:
+      retain: false
+  tsa:
+    externalAccess:
+      enabled: true
+    signer:
+      certificateChain:
+        rootCA:
+          organizationName: Red Hat
+          organizationEmail: rhtas-demo@redhat.com
+          commonName: tsa-root.rhtas.redhat.com
+        intermediateCA:
+          - organizationName: Red Hat
+            organizationEmail: rhtas-demo@redhat.com
+            commonName: tsa-intermediate.rhtas.redhat.com
+        leafCA:
+          organizationName: Red Hat
+          organizationEmail: rhtas-demo@redhat.com
+          commonName: tsa.rhtas.redhat.com
+  tuf:
+    externalAccess:
+      enabled: true
+  trillian:
+    database:
+      create: true

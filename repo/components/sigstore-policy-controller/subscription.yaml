@@ -1,0 +1,25 @@
+# Red Hat Policy Controller Operator — provides policy.sigstore.dev CRDs
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: policy-controller-operator
+  namespace: policy-controller-operator
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  targetNamespaces:
+    - policy-controller-operator
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: policy-controller-operator
+  namespace: policy-controller-operator
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  channel: tech-preview
+  installPlanApproval: Automatic
+  name: policy-controller-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

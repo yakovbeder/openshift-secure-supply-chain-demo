@@ -1,0 +1,27 @@
+# Require ACS policy check attestation — proves ACS evaluated the image
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-acs-policy-check
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: attestation
+  annotations:
+    description: "Require ACS (StackRox) policy check attestation"
+spec:
+  images:
+    - glob: "registry-quay-quay.__CLUSTER_DOMAIN__/secure-app/**"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: acs-policy-check
+          predicateType: https://stackrox.io/policy-check/v1
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://stackrox.io/policy-check/v1"
+  mode: enforce

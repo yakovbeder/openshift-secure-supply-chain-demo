@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: policy-controller-operator
+  labels:
+    app.kubernetes.io/name: sigstore-policy-controller
+    app.kubernetes.io/part-of: rhtas-demo

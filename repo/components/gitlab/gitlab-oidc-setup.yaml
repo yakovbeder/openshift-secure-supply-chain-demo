@@ -1,0 +1,154 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitlab-oidc-setup
+  namespace: gitlab-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitlab-oidc-setup
+  namespace: gitlab-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec"]
+    verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitlab-oidc-setup
+  namespace: gitlab-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitlab-oidc-setup
+subjects:
+  - kind: ServiceAccount
+    name: gitlab-oidc-setup
+    namespace: gitlab-system
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gitlab-oidc-setup
+  namespace: gitlab-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 10
+  template:
+    spec:
+      serviceAccountName: gitlab-oidc-setup
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: registry.redhat.io/openshift4/ose-cli:latest
+          env:
+            - name: GITLAB_HOST
+              value: "https://gitlab.__CLUSTER_DOMAIN__"
+            - name: GITLAB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gitlab-admin-credentials
+                  key: password
+            - name: OIDC_CLIENT_NAME
+              value: "RHTASONE"
+            - name: FULCIO_CALLBACK_URL
+              value: "https://fulcio-server-trusted-artifact-signer.__CLUSTER_DOMAIN__/callback"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "Waiting for GitLab to be ready..."
+              until curl -sk "${GITLAB_HOST}/-/readiness" | grep -q "ok"; do
+                echo "GitLab not ready yet, waiting..."
+                sleep 10
+              done
+              echo "GitLab is ready!"
+              
+              echo "Getting OAuth token..."
+              TOKEN=$(curl -sk --request POST "${GITLAB_HOST}/oauth/token" \
+                --data "grant_type=password" \
+                --data "username=root" \
+                --data "password=${GITLAB_PASSWORD}" | grep -o '"access_token":"[^"]*' | cut -d'"' -f4)
+              
+              if [ -z "$TOKEN" ]; then
+                echo "Failed to get OAuth token, trying Personal Access Token method..."
+                PAT=$(curl -sk --request POST "${GITLAB_HOST}/api/v4/users/1/personal_access_tokens" \
+                  --header "PRIVATE-TOKEN: ${GITLAB_PASSWORD}" \
+                  --data "name=rhtas-setup" \
+                  --data "scopes[]=api" \
+                  --data "expires_at=$(date -d '+1 day' +%Y-%m-%d)" 2>/dev/null | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+                
+                if [ -z "$PAT" ]; then
+                  echo "Creating application using direct API with root password..."
+                  RESPONSE=$(curl -sk --request POST "${GITLAB_HOST}/api/v4/applications" \
+                    --header "PRIVATE-TOKEN: ${GITLAB_PASSWORD}" \
+                    --data "name=${OIDC_CLIENT_NAME}" \
+                    --data "redirect_uri=${FULCIO_CALLBACK_URL}" \
+                    --data "scopes=openid email profile" \
+                    --data "confidential=false")
+                else
+                  RESPONSE=$(curl -sk --request POST "${GITLAB_HOST}/api/v4/applications" \
+                    --header "PRIVATE-TOKEN: ${PAT}" \
+                    --data "name=${OIDC_CLIENT_NAME}" \
+                    --data "redirect_uri=${FULCIO_CALLBACK_URL}" \
+                    --data "scopes=openid email profile" \
+                    --data "confidential=false")
+                fi
+              else
+                RESPONSE=$(curl -sk --request POST "${GITLAB_HOST}/api/v4/applications" \
+                  --header "Authorization: Bearer ${TOKEN}" \
+                  --data "name=${OIDC_CLIENT_NAME}" \
+                  --data "redirect_uri=${FULCIO_CALLBACK_URL}" \
+                  --data "scopes=openid email profile" \
+                  --data "confidential=false")
+              fi
+              
+              echo "API Response: ${RESPONSE}"
+              
+              CLIENT_ID=$(echo "${RESPONSE}" | grep -o '"application_id":"[^"]*' | cut -d'"' -f4)
+              if [ -z "$CLIENT_ID" ]; then
+                CLIENT_ID=$(echo "${RESPONSE}" | grep -o '"id":[0-9]*' | head -1 | cut -d':' -f2)
+              fi
+              
+              if [ -z "$CLIENT_ID" ] || [ "$CLIENT_ID" = "null" ]; then
+                echo "Checking if application already exists..."
+                EXISTING=$(curl -sk "${GITLAB_HOST}/api/v4/applications" \
+                  --header "PRIVATE-TOKEN: ${GITLAB_PASSWORD}" | grep -o "\"name\":\"${OIDC_CLIENT_NAME}\"")
+                if [ -n "$EXISTING" ]; then
+                  echo "Application ${OIDC_CLIENT_NAME} already exists"
+                  CLIENT_ID=$(curl -sk "${GITLAB_HOST}/api/v4/applications" \
+                    --header "PRIVATE-TOKEN: ${GITLAB_PASSWORD}" | grep -o '"application_id":"[^"]*' | head -1 | cut -d'"' -f4)
+                fi
+              fi
+              
+              echo "Client ID: ${CLIENT_ID}"
+              
+              cat <<EOF | kubectl apply -f -
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: gitlab-oidc-config
+                namespace: gitlab-system
+              data:
+                OIDC_ISSUER_URL: "${GITLAB_HOST}"
+                OIDC_CLIENT_ID: "${CLIENT_ID}"
+                OIDC_CLIENT_NAME: "${OIDC_CLIENT_NAME}"
+              EOF
+              
+              echo "GitLab OIDC configuration saved to ConfigMap gitlab-oidc-config"
+              echo "OIDC Issuer: ${GITLAB_HOST}"
+              echo "Client ID: ${CLIENT_ID}"
+

@@ -1,0 +1,81 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: rhtas-demo-components
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://gitea.__CLUSTER_DOMAIN__/gitea/rhtas-demo.git
+              revision: main
+              files:
+                - path: "config/enabled-components.yaml"
+          - list:
+              elementsYaml: |
+                {{ range .components }}
+                - component: "{{ . }}"
+                {{ end }}
+
+  template:
+    metadata:
+      name: '{{ .component }}'
+      namespace: openshift-gitops
+      labels:
+        managed-by: rhtas-demo-applicationset
+        component: '{{ .component }}'
+    spec:
+      project: default
+
+      source:
+        repoURL: https://gitea.__CLUSTER_DOMAIN__/gitea/rhtas-demo.git
+        targetRevision: main
+        path: 'components/{{ .component }}'
+
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: openshift-gitops
+
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+          allowEmpty: false
+
+        syncOptions:
+          - CreateNamespace=true
+          - RespectIgnoreDifferences=true
+          - ServerSideApply=true
+          - SkipDryRunOnMissingResource=true
+
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+
+      ignoreDifferences:
+        - group: ""
+          kind: Secret
+          jsonPointers:
+            - /data
+        - group: ""
+          kind: ServiceAccount
+          jsonPointers:
+            - /secrets
+            - /imagePullSecrets
+        - group: policy.sigstore.dev
+          kind: ClusterImagePolicy
+          jsonPointers:
+            - /status
+            - /metadata/finalizers
+          jqPathExpressions:
+            - .spec.authorities[].keyless.url
+            - .spec.authorities[].name

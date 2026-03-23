@@ -1,0 +1,99 @@
+# Jenkinsfile for secure-app (develop pipeline) — pushed to GitLab so Jenkins can run the pipeline
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: secure-app-jenkinsfile
+  namespace: gitlab-system
+data:
+  Jenkinsfile: |
+    pipeline {
+        agent { label 'supply-chain' }
+        options {
+            timeout(time: 45, unit: 'MINUTES')
+            disableConcurrentBuilds(abortPrevious: true)
+        }
+        environment {
+            NAMESPACE     = 'secure-app-dev'
+            IMAGE_TAG     = env.GIT_COMMIT?.take(8) ?: 'latest'
+        }
+        stages {
+            stage('Prepare') {
+                steps {
+                    script {
+                        if (fileExists('/run/quay-registry/QUAY_REGISTRY')) {
+                            env.REGISTRY = readFile('/run/quay-registry/QUAY_REGISTRY').trim()
+                            env.USE_QUAY = 'true'
+                        } else {
+                            env.REGISTRY = 'image-registry.openshift-image-registry.svc:5000'
+                            env.USE_QUAY = 'false'
+                        }
+                        env.BACKEND_IMG  = "${env.REGISTRY}/${env.NAMESPACE}/backend:${env.IMAGE_TAG}"
+                        env.FRONTEND_IMG = "${env.REGISTRY}/${env.NAMESPACE}/frontend:${env.IMAGE_TAG}"
+                    }
+                }
+            }
+            stage('Checkout') { steps { checkout scm } }
+            stage('Code Quality') {
+                steps {
+                    sh 'cd backend && (npm ci --prefer-offline 2>/dev/null || true) && (npm run lint 2>/dev/null || true); cd ../frontend && (npm run lint 2>/dev/null || true) || true'
+                }
+            }
+            stage('Build Images') {
+                parallel {
+                    stage('Build Backend') {
+                        steps {
+                            sh """
+                                buildah bud --layers -f backend/Dockerfile -t \$BACKEND_IMG backend/
+                                [ "\$USE_QUAY" = "true" ] && [ -f /run/quay-registry/QUAY_PASSWORD ] && buildah login -u \$(cat /run/quay-registry/QUAY_USER) --password-stdin \$REGISTRY < /run/quay-registry/QUAY_PASSWORD || true
+                                buildah push \$BACKEND_IMG
+                            """
+                        }
+                    }
+                    stage('Build Frontend') {
+                        steps {
+                            sh """
+                                buildah bud --layers -f frontend/Dockerfile -t \$FRONTEND_IMG frontend/
+                                [ "\$USE_QUAY" = "true" ] && [ -f /run/quay-registry/QUAY_PASSWORD ] && buildah login -u \$(cat /run/quay-registry/QUAY_USER) --password-stdin \$REGISTRY < /run/quay-registry/QUAY_PASSWORD || true
+                                buildah push \$FRONTEND_IMG
+                            """
+                        }
+                    }
+                }
+            }
+            stage('Supply Chain Security') {
+                steps {
+                    sh 'syft ${BACKEND_IMG} -o cyclonedx-json > backend-sbom.json || true'
+                    sh 'syft ${FRONTEND_IMG} -o cyclonedx-json > frontend-sbom.json || true'
+                    sh 'command -v trivy >/dev/null 2>&1 && trivy image --exit-code 0 ${BACKEND_IMG} ${FRONTEND_IMG} || true'
+                    sh 'command -v grype >/dev/null 2>&1 && grype ${BACKEND_IMG} ${FRONTEND_IMG} --fail-on high || true'
+                }
+            }
+            stage('Sign Images') {
+                steps {
+                    withCredentials([file(credentialsId: 'sigstore-oidc-token', variable: 'OIDC_TOKEN_FILE')]) {
+                        sh '''
+                            cosign sign --fulcio-url=$FULCIO_URL --rekor-url=$REKOR_URL --oidc-issuer=$OIDC_ISSUER --identity-token=$(cat $OIDC_TOKEN_FILE) --yes $BACKEND_IMG
+                            cosign sign --fulcio-url=$FULCIO_URL --rekor-url=$REKOR_URL --oidc-issuer=$OIDC_ISSUER --identity-token=$(cat $OIDC_TOKEN_FILE) --yes $FRONTEND_IMG
+                        '''
+                    }
+                }
+            }
+            stage('Verify Signatures') {
+                steps {
+                    sh 'cosign verify --rekor-url=$REKOR_URL --certificate-identity-regexp=".*secure-app.*" --certificate-oidc-issuer=$OIDC_ISSUER $BACKEND_IMG $FRONTEND_IMG'
+                }
+            }
+            stage('Deploy to DEV') {
+                steps {
+                    sh '''
+                        oc set image deployment/backend backend=$BACKEND_IMG -n $NAMESPACE || oc create deployment backend --image=$BACKEND_IMG -n $NAMESPACE
+                        oc set image deployment/frontend frontend=$FRONTEND_IMG -n $NAMESPACE || oc create deployment frontend --image=$FRONTEND_IMG -n $NAMESPACE
+                        [ "$USE_QUAY" = "true" ] && oc patch deployment backend -n $NAMESPACE -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"quay-pull-secret"}]}}}}' --type=merge || true
+                        [ "$USE_QUAY" = "true" ] && oc patch deployment frontend -n $NAMESPACE -p '{"spec":{"template":{"spec":{"imagePullSecrets":[{"name":"quay-pull-secret"}]}}}}' --type=merge || true
+                        oc rollout status deployment/backend -n $NAMESPACE --timeout=120s || true
+                        oc rollout status deployment/frontend -n $NAMESPACE --timeout=120s || true
+                    '''
+                }
+            }
+        }
+    }

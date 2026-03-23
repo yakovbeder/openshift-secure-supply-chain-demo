@@ -1,0 +1,18 @@
+# Claude Code context files
+CLAUDE.md
+**/CLAUDE.md
+
+# OS files
+.DS_Store
+*.swp
+*~
+
+# IDE
+.idea/
+.vscode/
+
+# Build artifacts
+node_modules/
+dist/
+build/
+*.log

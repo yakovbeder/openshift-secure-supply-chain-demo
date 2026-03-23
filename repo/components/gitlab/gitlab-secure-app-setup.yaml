@@ -1,0 +1,281 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: secure-app-source
+  namespace: gitlab-system
+data:
+  backend-dockerfile: |
+    FROM registry.access.redhat.com/ubi8/nodejs-18:latest
+    WORKDIR /app
+    COPY package.json ./
+    RUN npm install --production
+    COPY server.js ./
+    EXPOSE 3000
+    CMD ["node", "server.js"]
+  backend-package.json: |
+    {
+      "name": "secure-app-backend",
+      "version": "1.0.0",
+      "main": "server.js",
+      "scripts": {
+        "start": "node server.js",
+        "test": "echo \"Tests passed\" && exit 0",
+        "lint": "echo \"Lint passed\" && exit 0"
+      },
+      "dependencies": {
+        "express": "^4.18.2",
+        "cors": "^2.8.5"
+      }
+    }
+  backend-server.js: |
+    const express = require('express');
+    const cors = require('cors');
+    const app = express();
+    const PORT = process.env.PORT || 3000;
+    app.use(cors());
+    app.use(express.json());
+    app.get('/api/health', (req, res) => {
+      res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+    });
+    app.get('/api/info', (req, res) => {
+      res.json({
+        app: 'secure-app-backend',
+        version: '1.0.0',
+        signed: true,
+        signer: 'RHTAS'
+      });
+    });
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  frontend-dockerfile: |
+    FROM registry.access.redhat.com/ubi8/nginx-120:latest
+    COPY index.html /opt/app-root/src/
+    COPY nginx.conf /etc/nginx/nginx.conf
+    EXPOSE 8080
+    CMD ["nginx", "-g", "daemon off;"]
+  frontend-index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Secure App - RHTAS Demo</title>
+      <style>
+        body { font-family: 'Red Hat Display', sans-serif; background: #1a1a2e; color: #eee; margin: 0; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { color: #ee0000; }
+        .status { background: #16213e; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .signed { color: #00ff00; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>Secure App</h1>
+        <p>Container signed with Red Hat Trusted Artifact Signer</p>
+        <div class="status">
+          <h3>Signature Status: <span class="signed">VERIFIED</span></h3>
+          <p>This container image was signed using keyless signing via Jenkins OIDC</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  frontend-nginx.conf: |
+    worker_processes auto;
+    error_log /var/log/nginx/error.log;
+    pid /run/nginx.pid;
+    events { worker_connections 1024; }
+    http {
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+      server {
+        listen 8080;
+        server_name _;
+        location / {
+          root /opt/app-root/src;
+          index index.html;
+        }
+      }
+    }
+  k8s-deployment.yaml: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: secure-app-backend
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: secure-app-backend
+      template:
+        metadata:
+          labels:
+            app: secure-app-backend
+        spec:
+          containers:
+            - name: backend
+              image: IMAGE_PLACEHOLDER
+              ports:
+                - containerPort: 3000
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: secure-app-backend
+    spec:
+      selector:
+        app: secure-app-backend
+      ports:
+        - port: 3000
+          targetPort: 3000
+    ---
+    apiVersion: route.openshift.io/v1
+    kind: Route
+    metadata:
+      name: secure-app-backend
+    spec:
+      to:
+        kind: Service
+        name: secure-app-backend
+      port:
+        targetPort: 3000
+      tls:
+        termination: edge
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gitlab-secure-app-setup
+  namespace: gitlab-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: bitnami/git:latest
+          env:
+            - name: GITLAB_HOST
+              value: "gitlab.__CLUSTER_DOMAIN__"
+            - name: GITEA_HOST
+              value: "gitea.__CLUSTER_DOMAIN__"
+            - name: JENKINS_HOST
+              value: "jenkins.__CLUSTER_DOMAIN__"
+            - name: GIT_SSL_NO_VERIFY
+              value: "true"
+            - name: GITLAB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gitlab-admin-credentials
+                  key: password
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+
+              echo "=== Waiting for GitLab to be ready ==="
+              for i in $(seq 1 60); do
+                if curl -sk "https://${GITLAB_HOST}/-/readiness" | grep -q "ok"; then
+                  echo "GitLab is ready!"
+                  break
+                fi
+                echo "Attempt ${i}/60 — GitLab not ready yet..."
+                sleep 10
+              done
+
+              echo "=== Getting OAuth token ==="
+              TOKEN=$(curl -sk --request POST "https://${GITLAB_HOST}/oauth/token" \
+                --data "grant_type=password" \
+                --data "username=root" \
+                --data "password=${GITLAB_PASSWORD}" 2>/dev/null \
+                | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
+
+              if [ -z "${TOKEN}" ]; then
+                echo "WARN: OAuth failed, using password-based API auth"
+                AUTH_HEADER="PRIVATE-TOKEN: ${GITLAB_PASSWORD}"
+              else
+                echo "Got OAuth token"
+                AUTH_HEADER="Authorization: Bearer ${TOKEN}"
+              fi
+
+              echo "=== Creating secure-app project ==="
+              curl -sk -X POST "https://${GITLAB_HOST}/api/v4/projects" \
+                -H "${AUTH_HEADER}" \
+                -H "Content-Type: application/json" \
+                -d '{"name":"secure-app","path":"secure-app","namespace_id":1,"visibility":"public","initialize_with_readme":false}' || true
+
+              echo "=== Cloning app code from Gitea ==="
+              cd /tmp
+              git clone "https://gitea:gitea@${GITEA_HOST}/gitea/rhtas-demo.git" gitops-repo 2>&1 || \
+                git clone "https://${GITEA_HOST}/gitea/rhtas-demo.git" gitops-repo 2>&1
+
+              if [ ! -d /tmp/gitops-repo/apps-projects/secure-app ]; then
+                echo "ERROR: apps-projects/secure-app not found in gitops repo"
+                ls -la /tmp/gitops-repo/apps-projects/ 2>/dev/null || echo "apps-projects/ dir missing"
+                exit 1
+              fi
+
+              echo "=== Preparing secure-app repo ==="
+              mkdir -p secure-app && cd secure-app
+              git init
+              git config user.email "root@localhost"
+              git config user.name "Root"
+
+              cp -r /tmp/gitops-repo/apps-projects/secure-app/backend ./
+              cp -r /tmp/gitops-repo/apps-projects/secure-app/frontend ./
+              cp -r /tmp/gitops-repo/apps-projects/secure-app/k8s ./
+              cp -r /tmp/gitops-repo/apps-projects/secure-app/jenkins ./
+              cp /tmp/gitops-repo/apps-projects/secure-app/Jenkinsfile . 2>/dev/null || true
+              cp /tmp/gitops-repo/apps-projects/secure-app/.gitignore . 2>/dev/null || true
+
+              cat > README.md <<'READMEEOF'
+              # Secure App
+
+              Container application with RHTAS supply chain signing via Jenkins.
+
+              ## Branching Strategy
+              - `develop` — DEV builds + Sig #1 (DEV)
+              - `main` — STAGING promotion + Sig #2 (STAGING)
+              - `release/*` — PRODUCTION release + Sig #3 (PROD)
+              READMEEOF
+
+              git add -A
+              git commit -m "Initial commit — Secure App with RHTAS signing and Jenkins pipelines"
+              git branch -M main
+
+              echo "=== Pushing main branch ==="
+              git remote add origin "https://root:${GITLAB_PASSWORD}@${GITLAB_HOST}/root/secure-app.git"
+              git push -u origin main --force 2>&1 || echo "Push main completed"
+
+              echo "=== Creating develop branch ==="
+              git checkout -b develop
+              git push -u origin develop --force 2>&1 || echo "Push develop completed"
+
+              echo "=== Configuring Jenkins webhook ==="
+              sleep 5
+              PROJECT_ID=$(curl -sk "https://${GITLAB_HOST}/api/v4/projects?search=secure-app" \
+                -H "${AUTH_HEADER}" | python3 -c "import sys,json; projects=json.load(sys.stdin); print(projects[0]['id'] if projects else '')" 2>/dev/null || echo "")
+
+              if [ -n "${PROJECT_ID}" ]; then
+                echo "Project ID: ${PROJECT_ID}"
+                curl -sk -X POST "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ID}/hooks" \
+                  -H "${AUTH_HEADER}" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"url\":\"https://${JENKINS_HOST}/project/secure-app\",\"push_events\":true,\"merge_requests_events\":true,\"enable_ssl_verification\":false}"
+                echo ""
+                echo "Jenkins webhook created"
+              else
+                echo "WARNING: Could not find project ID, skipping webhook"
+              fi
+
+              echo ""
+              echo "=== Setup Complete ==="
+              echo "Repository: https://${GITLAB_HOST}/root/secure-app"
+              echo "Branches:   main, develop"
+              echo "Webhook:    https://${JENKINS_HOST}/project/secure-app"

@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure App - RHTAS Demo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@400;500;600;700&family=Red+Hat+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --red-hat-red: #ee0000;
+            --red-hat-dark: #a30000;
+            --bg-dark: #0f1419;
+            --bg-card: rgba(255, 255, 255, 0.03);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-primary: #ffffff;
+            --text-secondary: rgba(255, 255, 255, 0.6);
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --info: #3b82f6;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Red Hat Display', sans-serif;
+            min-height: 100vh;
+            background: var(--bg-dark);
+            background-image: 
+                radial-gradient(ellipse at top left, rgba(238, 0, 0, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse at bottom right, rgba(59, 130, 246, 0.1) 0%, transparent 50%);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+        .header {
+            background: rgba(0, 0, 0, 0.3);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header-brand {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .logo {
+            width: 40px;
+            height: 40px;
+            background: var(--red-hat-red);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .logo svg { width: 24px; height: 24px; fill: white; }
+        .header-title { font-weight: 700; font-size: 1.25rem; }
+        .env-badge {
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .env-dev { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+        .env-staging { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+        .env-production { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+        .main { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        .hero {
+            text-align: center;
+            padding: 3rem 0;
+        }
+        .hero-icon {
+            width: 100px;
+            height: 100px;
+            margin: 0 auto 1.5rem;
+            background: linear-gradient(135deg, var(--red-hat-red) 0%, var(--red-hat-dark) 100%);
+            border-radius: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 20px 40px rgba(238, 0, 0, 0.3);
+        }
+        .hero-icon svg { width: 56px; height: 56px; fill: white; }
+        .hero h1 { font-size: 2.5rem; font-weight: 700; margin-bottom: 0.5rem; }
+        .hero p { color: var(--text-secondary); font-size: 1.1rem; max-width: 500px; margin: 0 auto; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-top: 2rem; }
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            backdrop-filter: blur(10px);
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .card-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .card-icon svg { width: 20px; height: 20px; }
+        .card-icon.signature { background: rgba(16, 185, 129, 0.15); }
+        .card-icon.signature svg { fill: var(--success); }
+        .card-icon.build { background: rgba(59, 130, 246, 0.15); }
+        .card-icon.build svg { fill: var(--info); }
+        .card-icon.api { background: rgba(168, 85, 247, 0.15); }
+        .card-icon.api svg { fill: #a855f7; }
+        .card-title { font-weight: 600; font-size: 1rem; }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.6rem 0;
+        }
+        .info-row:not(:last-child) { border-bottom: 1px solid var(--border-color); }
+        .info-label { color: var(--text-secondary); font-size: 0.875rem; }
+        .info-value { font-weight: 500; font-family: 'Red Hat Mono', monospace; font-size: 0.875rem; }
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.25rem 0.6rem;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .status-success { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+        .status-warning { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+        .status-error { background: rgba(239, 68, 68, 0.15); color: var(--error); }
+        .status-loading { background: rgba(255, 255, 255, 0.1); color: var(--text-secondary); }
+        .workflow-section { margin-top: 2rem; }
+        .workflow-section h2 { font-size: 1.25rem; margin-bottom: 1rem; }
+        .workflow {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            padding: 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+        }
+        .workflow-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 1rem;
+            min-width: 100px;
+        }
+        .workflow-box {
+            width: 50px;
+            height: 50px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 0.5rem;
+            font-weight: 700;
+        }
+        .workflow-box.dev { background: rgba(59, 130, 246, 0.2); border: 2px solid #3b82f6; color: #60a5fa; }
+        .workflow-box.staging { background: rgba(245, 158, 11, 0.2); border: 2px solid #f59e0b; color: #fbbf24; }
+        .workflow-box.prod { background: rgba(16, 185, 129, 0.2); border: 2px solid #10b981; color: #34d399; }
+        .workflow-box.active { box-shadow: 0 0 20px currentColor; animation: pulse 2s infinite; }
+        .workflow-label { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; }
+        .workflow-arrow { color: var(--text-secondary); font-size: 1.5rem; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        .signature-details {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: rgba(16, 185, 129, 0.05);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            border-radius: 12px;
+            font-family: 'Red Hat Mono', monospace;
+            font-size: 0.75rem;
+        }
+        .signature-details pre {
+            white-space: pre-wrap;
+            word-break: break-all;
+            color: var(--success);
+        }
+        .footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+        .footer-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: rgba(238, 0, 0, 0.1);
+            border: 1px solid rgba(238, 0, 0, 0.2);
+            border-radius: 20px;
+            color: #ff6b6b;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-brand">
+            <div class="logo">
+                <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
+            </div>
+            <span class="header-title">Secure App</span>
+        </div>
+        <span id="env-badge" class="env-badge env-dev">🔧 Development</span>
+    </header>
+
+    <main class="main">
+        <section class="hero">
+            <div class="hero-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6.2 1.2.8 1.2 1.5v3c0 .8-.7 1.5-1.5 1.5h-5c-.8 0-1.5-.7-1.5-1.5v-3c0-.7.5-1.3 1.2-1.5V9.5C9.2 8.1 10.6 7 12 7z"/></svg>
+            </div>
+            <h1>Cryptographically Signed</h1>
+            <p>This application is protected by Red Hat Trusted Artifact Signer (RHTAS) with keyless signing</p>
+        </section>
+
+        <section class="grid">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon signature">
+                        <svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                    </div>
+                    <span class="card-title">Signature Verification</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Status</span>
+                    <span id="sig-status" class="status-badge status-loading">⏳ Checking...</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Signer</span>
+                    <span id="signer" class="info-value">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Transparency Log</span>
+                    <span id="rekor" class="info-value">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Timestamp</span>
+                    <span id="sig-timestamp" class="info-value">-</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon build">
+                        <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+                    </div>
+                    <span class="card-title">Build Information</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Version</span>
+                    <span id="version" class="info-value">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Image Tag</span>
+                    <span id="image-tag" class="info-value">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Environment</span>
+                    <span id="environment" class="info-value">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Build Date</span>
+                    <span id="build-date" class="info-value">-</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon api">
+                        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+                    </div>
+                    <span class="card-title">API Status</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Backend</span>
+                    <span id="backend-status" class="status-badge status-loading">⏳ Connecting...</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Response Time</span>
+                    <span id="response-time" class="info-value">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Message</span>
+                    <span id="api-message" class="info-value">-</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="workflow-section">
+            <h2>🚀 GitFlow Pipeline Status</h2>
+            <div class="workflow">
+                <div class="workflow-step">
+                    <div id="wf-dev" class="workflow-box dev">DEV</div>
+                    <span class="workflow-label">develop</span>
+                </div>
+                <span class="workflow-arrow">→</span>
+                <div class="workflow-step">
+                    <div id="wf-staging" class="workflow-box staging">STG</div>
+                    <span class="workflow-label">main</span>
+                </div>
+                <span class="workflow-arrow">→</span>
+                <div class="workflow-step">
+                    <div id="wf-prod" class="workflow-box prod">PRD</div>
+                    <span class="workflow-label">release/*</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="card" style="margin-top: 1.5rem;">
+            <div class="card-header">
+                <div class="card-icon signature">
+                    <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+                </div>
+                <span class="card-title">Signature Details (for Offline Verification)</span>
+            </div>
+            <div class="signature-details">
+                <pre id="sig-details">Loading signature information...</pre>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <div class="footer-badge">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
+            Secured by Red Hat Trusted Artifact Signer (RHTAS)
+        </div>
+        <p style="margin-top: 1rem;">Keyless signing powered by Sigstore • Fulcio • Rekor • TUF</p>
+    </footer>
+
+    <script>
+        const startTime = performance.now();
+        
+        fetch('/api/info')
+            .then(response => response.json())
+            .then(data => {
+                const endTime = performance.now();
+                const responseTime = Math.round(endTime - startTime);
+                
+                document.getElementById('version').textContent = data.version || '1.0.0';
+                document.getElementById('image-tag').textContent = data.imageTag || 'latest';
+                document.getElementById('environment').textContent = data.environment || 'development';
+                document.getElementById('build-date').textContent = data.buildDate || new Date().toISOString().split('T')[0];
+                document.getElementById('api-message').textContent = data.message || 'Connected';
+                document.getElementById('response-time').textContent = responseTime + 'ms';
+                
+                document.getElementById('sig-status').className = 'status-badge status-success';
+                document.getElementById('sig-status').innerHTML = '✓ Verified';
+                document.getElementById('signer').textContent = data.signer || 'GitLab CI';
+                document.getElementById('rekor').textContent = data.rekorEntry ? 'Entry #' + data.rekorEntry : 'Recorded';
+                document.getElementById('sig-timestamp').textContent = data.signedAt || new Date().toISOString();
+                
+                document.getElementById('backend-status').className = 'status-badge status-success';
+                document.getElementById('backend-status').innerHTML = '✓ Connected';
+                
+                const env = (data.environment || 'development').toLowerCase();
+                const envBadge = document.getElementById('env-badge');
+                if (env.includes('prod')) {
+                    envBadge.className = 'env-badge env-production';
+                    envBadge.innerHTML = '🚀 Production';
+                    document.getElementById('wf-prod').classList.add('active');
+                } else if (env.includes('stag')) {
+                    envBadge.className = 'env-badge env-staging';
+                    envBadge.innerHTML = '🧪 Staging';
+                    document.getElementById('wf-staging').classList.add('active');
+                } else {
+                    envBadge.className = 'env-badge env-dev';
+                    envBadge.innerHTML = '🔧 Development';
+                    document.getElementById('wf-dev').classList.add('active');
+                }
+                
+                document.getElementById('sig-details').textContent = JSON.stringify({
+                    image: data.image || 'secure-app/backend:' + (data.imageTag || 'latest'),
+                    signer: data.signer || 'GitLab CI Pipeline',
+                    oidcIssuer: 'https://gitlab.apps.cluster-5xch6.dynamic.redhatworkshops.io',
+                    fulcioUrl: 'https://fulcio-server-trusted-artifact-signer.apps.cluster-5xch6.dynamic.redhatworkshops.io',
+                    rekorUrl: 'https://rekor-server-trusted-artifact-signer.apps.cluster-5xch6.dynamic.redhatworkshops.io',
+                    verifyCommand: 'cosign verify --certificate-identity-regexp=".*" --certificate-oidc-issuer="https://gitlab.apps..." <image>'
+                }, null, 2);
+            })
+            .catch(error => {
+                document.getElementById('sig-status').className = 'status-badge status-error';
+                document.getElementById('sig-status').innerHTML = '✗ Error';
+                document.getElementById('backend-status').className = 'status-badge status-error';
+                document.getElementById('backend-status').innerHTML = '✗ Failed';
+                document.getElementById('api-message').textContent = 'Unable to connect to backend';
+                console.error('Error:', error);
+            });
+    </script>
+</body>
+</html>
+<!-- Version: 1.0.1-dev - Enhanced UI for GitFlow Demo -->

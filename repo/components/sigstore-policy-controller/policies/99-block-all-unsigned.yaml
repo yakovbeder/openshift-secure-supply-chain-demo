@@ -1,0 +1,48 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# CATCH-ALL POLICY: Block All Unsigned Images
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Default policy to block all unsigned images not matched by other policies
+# Mode: warn (change to enforce for zero-trust environments)
+# Priority: 99 (evaluated last)
+#
+# This is a safety net that requires ALL images to have a valid signature
+# from the trusted OIDC issuer (GitLab or Jenkins).
+#
+# Images that pass this policy:
+# - Signed by GitLab CI pipeline with valid OIDC token
+# - Already allowed by allow-redhat-images policy
+#
+# Images that fail this policy:
+# - Unsigned images from any registry
+# - Images signed with unknown keys
+# - Images signed by untrusted OIDC providers
+#
+# WARNING: Setting mode to 'enforce' will block ALL unsigned images cluster-wide.
+# Ensure all necessary allow-list policies are in place before enforcing.
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: block-all-unsigned
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: catch-all
+  annotations:
+    description: "Block all unsigned images (catch-all policy)"
+    category: "catch-all"
+    priority: "99"
+spec:
+  images:
+    - glob: "**"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+  mode: enforce

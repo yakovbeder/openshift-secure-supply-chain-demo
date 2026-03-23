@@ -1,0 +1,17 @@
+apiVersion: rhtas.charts.redhat.com/v1alpha1
+kind: PolicyController
+metadata:
+  name: policy-controller
+  namespace: policy-controller-operator
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  policy:
+    includeObjectMeta: false
+    includeClusterImagePolicies: true
+    includeTypeMeta: false
+  cosign:
+    webhookName: policy.sigstore.dev
+  webhook:
+    name: policy-controller-webhook
+    failurePolicy: Ignore

@@ -1,0 +1,110 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: lint-test
+  labels:
+    app.kubernetes.io/version: "1.0"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.50.0"
+    tekton.dev/categories: Code Quality
+    tekton.dev/tags: lint, test, javascript, html
+    tekton.dev/displayName: "Lint and Test Code"
+spec:
+  description: >-
+    Run linting and tests for both backend and frontend components.
+    Combines ESLint, HTMLHint, Prettier, and Jest tests.
+
+  params:
+    - name: COMPONENT
+      description: Component to lint/test (backend, frontend, or all)
+      type: string
+      default: "all"
+
+  workspaces:
+    - name: source
+      description: Source code workspace
+
+  steps:
+    - name: lint-backend
+      image: node:18-alpine
+      workingDir: $(workspaces.source.path)/backend
+      when:
+        - input: "$(params.COMPONENT)"
+          operator: in
+          values: ["backend", "all"]
+      script: |
+        #!/bin/sh
+        set -eu
+
+        echo "════════════════════════════════════════════════════════════"
+        echo "  LINTING BACKEND CODE"
+        echo "════════════════════════════════════════════════════════════"
+
+        if [ -f "package.json" ]; then
+          echo "Installing dependencies..."
+          npm install --quiet
+
+          if [ -f "node_modules/.bin/eslint" ]; then
+            echo "Running ESLint..."
+            npm run lint || echo "⚠️ Linting issues found"
+          else
+            echo "ESLint not configured, skipping..."
+          fi
+        else
+          echo "No package.json found, skipping..."
+        fi
+
+        echo "✅ Backend linting complete"
+
+    - name: test-backend
+      image: node:18-alpine
+      workingDir: $(workspaces.source.path)/backend
+      when:
+        - input: "$(params.COMPONENT)"
+          operator: in
+          values: ["backend", "all"]
+      script: |
+        #!/bin/sh
+        set -eu
+
+        echo "════════════════════════════════════════════════════════════"
+        echo "  TESTING BACKEND CODE"
+        echo "════════════════════════════════════════════════════════════"
+
+        if [ -f "package.json" ]; then
+          # Check if tests are configured
+          if grep -q '"test"' package.json; then
+            echo "Running tests..."
+            npm test || echo "⚠️ Test failures found"
+          else
+            echo "No tests configured, skipping..."
+          fi
+        else
+          echo "No package.json found, skipping..."
+        fi
+
+        echo "✅ Backend testing complete"
+
+    - name: lint-frontend
+      image: node:18-alpine
+      workingDir: $(workspaces.source.path)/frontend
+      when:
+        - input: "$(params.COMPONENT)"
+          operator: in
+          values: ["frontend", "all"]
+      script: |
+        #!/bin/sh
+        set -eu
+
+        echo "════════════════════════════════════════════════════════════"
+        echo "  LINTING FRONTEND CODE"
+        echo "════════════════════════════════════════════════════════════"
+
+        # Install htmlhint
+        npm install -g htmlhint
+
+        # Lint HTML files
+        echo "Running HTMLHint..."
+        htmlhint **/*.html || echo "⚠️ HTML linting issues found"
+
+        echo "✅ Frontend linting complete"

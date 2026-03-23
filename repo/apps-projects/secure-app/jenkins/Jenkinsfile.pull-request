@@ -1,0 +1,89 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// PULL REQUEST PIPELINE — Code quality + build validation (no signing, no push)
+// Triggers: Pull/Merge Request targeting main or develop
+// ═══════════════════════════════════════════════════════════════════════════
+
+pipeline {
+    agent { label 'supply-chain' }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds(abortPrevious: true)
+        buildDiscarder(logRotator(numToKeepStr: '3'))
+    }
+
+    environment {
+        REGISTRY     = 'image-registry.openshift-image-registry.svc:5000'
+        CI_NAMESPACE = 'ci-temp'
+        IMAGE_TAG    = "pr-${env.GIT_COMMIT?.take(8) ?: 'latest'}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Code Quality') {
+            parallel {
+                stage('Lint & Test') {
+                    steps {
+                        sh '''
+                            echo "Running lint and unit tests..."
+                            cd backend && npm ci --prefer-offline && npm run lint && npm test || true
+                            cd ../frontend && npm ci --prefer-offline && npm run lint || true
+                        '''
+                    }
+                }
+                stage('Kube Lint') {
+                    steps {
+                        sh '''
+                            echo "Running kube-linter on manifests..."
+                            kube-linter lint k8s/ --config .kube-linter.yaml 2>/dev/null || \
+                            kube-linter lint k8s/ || true
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Build Check') {
+            parallel {
+                stage('Build Backend') {
+                    steps {
+                        sh """
+                            buildah bud --layers \
+                                -f backend/Dockerfile \
+                                -t ${REGISTRY}/${CI_NAMESPACE}/backend:${IMAGE_TAG} \
+                                backend/
+                        """
+                    }
+                }
+                stage('Build Frontend') {
+                    steps {
+                        sh """
+                            buildah bud --layers \
+                                -f frontend/Dockerfile \
+                                -t ${REGISTRY}/${CI_NAMESPACE}/frontend:${IMAGE_TAG} \
+                                frontend/
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo """
+            ════════════════════════════════════════════════════
+              PULL REQUEST CI CHECK
+              Branch : ${env.BRANCH_NAME}
+              Commit : ${env.GIT_COMMIT?.take(8) ?: 'unknown'}
+              Status : ${currentBuild.currentResult}
+            ════════════════════════════════════════════════════
+            """
+        }
+    }
+}

@@ -1,0 +1,124 @@
+apiVersion: apps.gitlab.com/v1beta1
+kind: GitLab
+metadata:
+  name: gitlab
+  namespace: gitlab-system
+spec:
+  chart:
+    version: "9.8.7"
+    values:
+      global:
+        hosts:
+          # Route host will be gitlab.<domain> (e.g. gitlab.__CLUSTER_DOMAIN__)
+          domain: __CLUSTER_DOMAIN__
+          https: true
+        ingress:
+          configureCertmanager: false
+          class: openshift-default
+          annotations:
+            route.openshift.io/termination: edge
+        # Reduce resource consumption
+        appConfig:
+          enableUsagePing: false
+          enableSeatLink: false
+      certmanager:
+        install: false
+      nginx-ingress:
+        enabled: false
+      prometheus:
+        install: false
+      # Disable non-essential components
+      registry:
+        enabled: false
+      gitlab-runner:
+        install: false
+      gitlab:
+        gitaly:
+          resources:
+            requests:
+              cpu: 25m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+        webservice:
+          minReplicas: 1
+          maxReplicas: 1
+          workerProcesses: 1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 2
+              memory: 3Gi
+        sidekiq:
+          minReplicas: 1
+          maxReplicas: 1
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 1
+              memory: 2500Mi
+        gitlab-shell:
+          minReplicas: 1
+          maxReplicas: 1
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+        kas:
+          minReplicas: 1
+          maxReplicas: 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
+        gitlab-exporter:
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 128Mi
+        toolbox:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
+      postgresql:
+        resources:
+          requests:
+            cpu: 25m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+      redis:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 256Mi
+      minio:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 256Mi

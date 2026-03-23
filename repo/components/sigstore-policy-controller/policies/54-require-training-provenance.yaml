@@ -1,0 +1,46 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# ML POLICY: Require SLSA Training Provenance
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Warn if ML models lack SLSA training provenance attestation
+# Mode: warn
+# Priority: 54
+#
+# Training provenance captures: who trained it, what data, what hyperparameters,
+# what commit, what pipeline — critical for model reproducibility.
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-training-provenance
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: ml-provenance
+  annotations:
+    description: "Warn if ML models lack SLSA training provenance"
+    category: "ml-provenance"
+    priority: "54"
+spec:
+  images:
+    - glob: "image-registry.openshift-image-registry.svc:5000/*/ml-models/*"
+    - glob: "default-route-openshift-image-registry.*/*/ml-models/*"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: "https://kubernetes.default.svc"
+            subjectRegExp: "system:serviceaccount:ml-model-.*:.*"
+          - issuer: "https://gitlab.__CLUSTER_DOMAIN__"
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: training-provenance
+          predicateType: "https://slsa.dev/provenance/v1"
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://slsa.dev/provenance/v1"
+  mode: warn

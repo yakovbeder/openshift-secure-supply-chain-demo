@@ -1,0 +1,107 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-admin
+  namespace: secure-app-dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-image-builder
+  namespace: secure-app-dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:image-builder
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-admin
+  namespace: secure-app-staging
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-image-builder
+  namespace: secure-app-staging
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:image-builder
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-admin
+  namespace: secure-app-prod
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: admin
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-image-builder
+  namespace: secure-app-prod
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:image-builder
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins

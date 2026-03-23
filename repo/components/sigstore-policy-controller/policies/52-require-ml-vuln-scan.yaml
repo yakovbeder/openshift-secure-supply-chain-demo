@@ -1,0 +1,43 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# ML POLICY: Require Vulnerability Scan for ML Images
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Warn if ML serving images lack vulnerability scan attestation
+# Mode: warn
+# Priority: 52
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-ml-vuln-scan
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: ml-vulnerability
+  annotations:
+    description: "Warn if ML serving images lack vulnerability scan attestation"
+    category: "ml-vulnerability"
+    priority: "52"
+spec:
+  images:
+    - glob: "default-route-openshift-image-registry.*/*-server:*"
+    - glob: "image-registry.openshift-image-registry.svc:5000/*/*-server:*"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: "https://kubernetes.default.svc"
+            subjectRegExp: "system:serviceaccount:ml-model-.*:.*"
+          - issuer: "https://gitlab.__CLUSTER_DOMAIN__"
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: ml-vuln-scan
+          predicateType: "https://cosign.sigstore.dev/attestation/vuln/v1"
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://cosign.sigstore.dev/attestation/vuln/v1"
+  mode: warn

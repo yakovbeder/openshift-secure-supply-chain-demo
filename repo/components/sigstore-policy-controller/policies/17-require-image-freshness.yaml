@@ -1,0 +1,77 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# SECURITY POLICY: Image Freshness / Age Verification
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Block deployment of stale images older than allowed threshold
+# Mode: warn (requires build timestamp attestation)
+# Priority: 17
+#
+# Why image freshness matters:
+# - Stale images may contain unpatched vulnerabilities
+# - Old images miss critical security updates
+# - Ensures regular rebuild cycles
+# - Reduces attack surface from outdated dependencies
+#
+# Freshness thresholds:
+# - DEV: 30 days (more frequent iteration)
+# - STAGING: 60 days (pre-production validation)
+# - PRODUCTION: 90 days (stability vs security balance)
+#
+# Pipeline integration:
+#   BUILD_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+#   echo "{\"buildTimestamp\": \"${BUILD_TIMESTAMP}\", \"maxAgeDays\": 90}" > freshness.json
+#   cosign attest --type https://example.com/build-freshness/v1 --predicate freshness.json ${IMAGE}
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-image-freshness
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: security
+  annotations:
+    description: "Block stale images older than 90 days"
+    category: "security-freshness"
+    priority: "17"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: build-freshness
+          predicateType: https://example.com/build-freshness/v1
+          policy:
+            type: cue
+            data: |
+              import "time"
+              
+              predicateType: "https://example.com/build-freshness/v1"
+              
+              predicate: {
+                buildTimestamp: string
+                maxAgeDays: number | *90
+                
+                // Parse and validate timestamp
+                _buildTime: time.Parse(time.RFC3339, buildTimestamp)
+                _now: time.Now()
+                _ageSeconds: _now - _buildTime
+                _ageDays: _ageSeconds / (24 * 3600)
+                
+                // Fail if image is too old
+                if _ageDays > maxAgeDays {
+                  _fail: "Image is \(_ageDays) days old, exceeds \(maxAgeDays) day limit"
+                }
+              }
+  mode: warn
+
+

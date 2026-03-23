@@ -1,0 +1,62 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# COMPLIANCE POLICY: Approved Base Images Only
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Only allow images built from approved base images
+# Mode: warn (requires base image attestation)
+# Priority: 15
+#
+# Approved base images:
+# - Red Hat UBI (Universal Base Image)
+# - Red Hat Enterprise Linux
+# - Approved distroless images
+#
+# This policy ensures:
+# - All images use security-hardened base images
+# - Base images receive regular security updates
+# - Compliance with organizational standards
+#
+# Implementation options:
+# 1. Attestation with base image info
+# 2. Image inspection in admission webhook
+# 3. Build-time enforcement in CI/CD
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-base-image-allowlist
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: compliance
+  annotations:
+    description: "Require images built from approved base images"
+    category: "compliance-base-image"
+    priority: "15"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      # Attestation verifying base image is from approved list
+      attestations:
+        - name: base-image-verification
+          predicateType: https://example.com/base-image/v1
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://example.com/base-image/v1"
+              predicate: {
+                baseImage: =~"^(registry.access.redhat.com/ubi|registry.redhat.io/ubi).*"
+              }
+  mode: warn
+
+

@@ -1,0 +1,110 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: acs-secret-manager
+  namespace: stackrox
+  annotations:
+    argocd.argoproj.io/sync-wave: "25"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "patch"]
+  # For acs-reset-admin-password Job: restart Central after patching htpasswd
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: acs-secret-manager
+  namespace: stackrox
+  annotations:
+    argocd.argoproj.io/sync-wave: "25"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: acs-secret-manager
+subjects:
+  - kind: ServiceAccount
+    name: acs-init
+    namespace: stackrox
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: acs-init
+  namespace: stackrox
+  annotations:
+    argocd.argoproj.io/sync-wave: "25"
+---
+# Job that waits for Central to be ready and generates a CI/CD API token.
+# The token is stored in the stackrox-secret so Tekton ClusterTasks can use it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: acs-init-api-token
+  namespace: stackrox
+  annotations:
+    argocd.argoproj.io/sync-wave: "30"
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      serviceAccountName: acs-init
+      restartPolicy: OnFailure
+      containers:
+        - name: init-token
+          image: registry.redhat.io/openshift4/ose-cli:latest
+          env:
+            - name: CENTRAL_ENDPOINT
+              value: "https://central.stackrox.svc:443"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              echo "Waiting for Central to become ready..."
+              for i in $(seq 1 60); do
+                if curl -sk "${CENTRAL_ENDPOINT}/v1/ping" | grep -q "pong"; then
+                  echo "Central is ready."
+                  break
+                fi
+                echo "  Attempt ${i}/60 — Central not ready yet..."
+                sleep 10
+              done
+
+              ADMIN_PASS=$(oc get secret central-htpasswd -n stackrox -o jsonpath='{.data.password}' | base64 -d)
+
+              echo "Generating CI/CD API token..."
+              TOKEN_JSON=$(curl -sk \
+                -u "admin:${ADMIN_PASS}" \
+                -X POST "${CENTRAL_ENDPOINT}/v1/apitokens/generate" \
+                -H "Content-Type: application/json" \
+                -d '{"name":"rhtas-demo-cicd","role":"Continuous Integration"}')
+
+              API_TOKEN=$(echo "${TOKEN_JSON}" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+
+              if [ -z "${API_TOKEN}" ]; then
+                echo "ERROR: Failed to generate API token"
+                exit 1
+              fi
+
+              echo "Patching stackrox-secret with API token..."
+              oc patch secret stackrox-secret -n stackrox \
+                --type merge \
+                -p "{\"stringData\":{\"rox_api_token\":\"${API_TOKEN}\"}}"
+
+              echo "Creating acs-rox-credentials in jenkins for pipeline use..."
+              oc create secret generic acs-rox-credentials -n jenkins \
+                --from-literal=rox_api_token="${API_TOKEN}" \
+                --from-literal=rox_central_endpoint="central.stackrox.svc:443" \
+                --dry-run=client -o yaml | oc apply -f -
+
+              echo "Done — stackrox-secret and jenkins/acs-rox-credentials updated."

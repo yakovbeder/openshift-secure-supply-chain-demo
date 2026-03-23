@@ -1,0 +1,60 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# ATTESTATION POLICY: Require SLSA Provenance
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Require SLSA (Supply-chain Levels for Software Artifacts) provenance
+# Mode: warn (experimental - requires SLSA generator in pipeline)
+# Priority: 9
+#
+# SLSA Provenance provides:
+# - Proof of where and how the artifact was built
+# - Build configuration and parameters
+# - Source code reference and commit
+# - Builder identity and environment
+#
+# SLSA Levels:
+# - Level 1: Documentation of build process
+# - Level 2: Tamper resistance of build service
+# - Level 3: Hardened builds with source integrity
+# - Level 4: Hermetic, reproducible builds
+#
+# Pipeline integration (using slsa-github-generator or similar):
+#   # Generate SLSA provenance during build
+#   cosign attest --type slsaprovenance --predicate provenance.json ${IMAGE}
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-slsa-provenance
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: attestation
+  annotations:
+    description: "Require SLSA provenance attestation for build transparency"
+    category: "attestation-slsa"
+    priority: "9"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*:prod-*
+    - glob: default-route-openshift-image-registry.*/secure-app/*:v*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: slsa-provenance
+          predicateType: https://slsa.dev/provenance/v0.2
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://slsa.dev/provenance/v0.2"
+  mode: warn
+
+

@@ -1,0 +1,60 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: jenkins-agent-supply-chain
+  namespace: jenkins
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app: jenkins
+    role: jenkins-agent
+spec:
+  runPolicy: Serial
+  source:
+    type: Dockerfile
+    dockerfile: |
+      FROM image-registry.openshift-image-registry.svc:5000/openshift/jenkins-agent-base:latest
+
+      USER root
+
+      # System packages (jq, nodejs already installed in base; add npm)
+      RUN dnf install -y --nodocs --nobest --skip-broken npm 2>/dev/null; \
+          dnf clean all && rm -rf /var/cache/dnf
+
+      # cosign + rekor-cli from RHTAS CLI server (cluster-internal svc)
+      RUN curl -skL "http://cli-server.trusted-artifact-signer.svc:8080/clients/linux/cosign-amd64.gz" | gunzip > /usr/local/bin/cosign \
+          && chmod +x /usr/local/bin/cosign \
+          && curl -skL "http://cli-server.trusted-artifact-signer.svc:8080/clients/linux/rekor-cli-amd64.gz" | gunzip > /usr/local/bin/rekor-cli \
+          && chmod +x /usr/local/bin/rekor-cli \
+          && curl -skL "http://cli-server.trusted-artifact-signer.svc:8080/clients/linux/ec-amd64.gz" | gunzip > /usr/local/bin/ec \
+          && chmod +x /usr/local/bin/ec
+
+      # syft (SBOM generator)
+      RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      # trivy (vulnerability scanner)
+      RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      # kube-linter
+      RUN curl -sL "https://github.com/stackrox/kube-linter/releases/latest/download/kube-linter-linux" -o /usr/local/bin/kube-linter \
+          && chmod +x /usr/local/bin/kube-linter
+
+      # roxctl lazy-download wrapper (downloads from ACS Central on first use)
+      RUN printf '#!/bin/bash\nif [ ! -f /tmp/roxctl ]; then\n  ROX_HOST="${ROX_CENTRAL_ENDPOINT%%:*}"\n  curl -sk "https://${ROX_HOST}/api/cli/download/roxctl-linux" -o /tmp/roxctl && chmod +x /tmp/roxctl\nfi\n/tmp/roxctl "$@"\n' > /usr/local/bin/roxctl \
+          && chmod +x /usr/local/bin/roxctl
+
+      USER 1001
+  strategy:
+    type: Docker
+    dockerStrategy:
+      from:
+        kind: ImageStreamTag
+        namespace: openshift
+        name: "jenkins-agent-base:latest"
+      noCache: false
+  output:
+    to:
+      kind: ImageStreamTag
+      name: "jenkins-agent-supply-chain:latest"
+  triggers:
+    - type: ConfigChange

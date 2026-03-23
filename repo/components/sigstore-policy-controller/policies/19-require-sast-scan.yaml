@@ -1,0 +1,104 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# SECURITY POLICY: Static Application Security Testing (SAST) Attestation
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Require SAST scan attestation for code security analysis
+# Mode: warn (requires SAST tooling in pipeline)
+# Priority: 19
+#
+# SAST (Static Application Security Testing) detects:
+# - SQL Injection vulnerabilities
+# - Cross-Site Scripting (XSS)
+# - Command Injection
+# - Path Traversal
+# - Insecure Deserialization
+# - Hardcoded Secrets
+# - Unsafe Regular Expressions
+# - Security Misconfigurations
+#
+# Supported SAST tools:
+# - Semgrep (open source, fast)
+# - SonarQube / SonarCloud
+# - CodeQL (GitHub)
+# - Checkmarx
+# - Snyk Code
+# - Bandit (Python)
+# - ESLint security plugins (JavaScript)
+#
+# Pipeline integration:
+#   # Run Semgrep SAST scan
+#   semgrep scan --config=auto --json -o sast-results.json .
+#   
+#   # Create attestation with summary
+#   jq '{
+#     scanner: "semgrep",
+#     timestamp: now | todate,
+#     status: (if (.results | length) == 0 then "pass" else "findings" end),
+#     summary: {
+#       total: (.results | length),
+#       critical: ([.results[] | select(.extra.severity == "ERROR")] | length),
+#       high: ([.results[] | select(.extra.severity == "WARNING")] | length)
+#     }
+#   }' sast-results.json > sast-attestation.json
+#   
+#   cosign attest --type https://example.com/sast-scan/v1 --predicate sast-attestation.json ${IMAGE}
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-sast-scan
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: security
+  annotations:
+    description: "Require Static Application Security Testing (SAST) attestation"
+    category: "security-sast"
+    priority: "19"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: sast-scan
+          predicateType: https://example.com/sast-scan/v1
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://example.com/sast-scan/v1"
+              
+              predicate: {
+                scanner: string
+                timestamp?: string
+                status: "pass" | "findings" | "fail"
+                
+                summary: {
+                  total: number
+                  critical: number
+                  high: number
+                  medium?: number
+                  low?: number
+                }
+                
+                // Block if critical findings exist
+                if summary.critical > 0 {
+                  _fail: "SAST scan found \(summary.critical) critical vulnerabilities"
+                }
+                
+                // Block if too many high findings
+                if summary.high > 5 {
+                  _fail: "SAST scan found \(summary.high) high severity issues (max 5)"
+                }
+              }
+  mode: warn
+
+

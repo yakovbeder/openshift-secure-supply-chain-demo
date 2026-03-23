@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secure-app-dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "18"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    environment: dev
+    policy.sigstore.dev/include: "true"
+    policy.rhtas.com/include: "true"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secure-app-staging
+  annotations:
+    argocd.argoproj.io/sync-wave: "18"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    environment: staging
+    policy.sigstore.dev/include: "true"
+    policy.rhtas.com/include: "true"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secure-app-prod
+  annotations:
+    argocd.argoproj.io/sync-wave: "18"
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    environment: production
+    policy.sigstore.dev/include: "true"
+    policy.rhtas.com/include: "true"

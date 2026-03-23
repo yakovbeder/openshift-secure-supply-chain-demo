@@ -1,0 +1,316 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: secure-app-staging-push
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[push]"
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+  labels:
+    app.kubernetes.io/part-of: secure-app
+    environment: staging
+spec:
+  params:
+    - name: GIT_REPO
+      value: "{{ repo_url }}"
+    - name: GIT_REVISION
+      value: "{{ revision }}"
+    - name: IMAGE_TAG
+      value: "{{ revision }}"
+    - name: REGISTRY
+      value: "image-registry.openshift-image-registry.svc:5000"
+    - name: DEV_NAMESPACE
+      value: "secure-app-dev"
+    - name: NAMESPACE
+      value: "secure-app-staging"
+
+  pipelineSpec:
+    params:
+      - name: GIT_REPO
+        type: string
+      - name: GIT_REVISION
+        type: string
+      - name: IMAGE_TAG
+        type: string
+      - name: REGISTRY
+        type: string
+      - name: DEV_NAMESPACE
+        type: string
+      - name: NAMESPACE
+        type: string
+
+    workspaces:
+      - name: source
+      - name: artifacts
+      - name: dockerconfig
+      - name: gitops-source
+
+    tasks:
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 1: VERIFY DEV SIGNATURES (trust chain)
+      # ══════════════════════════════════════════════════════════════
+      - name: verify-backend-dev-sig
+        taskRef:
+          name: verify-signature
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: REQUIRED_IDENTITY
+            value: "system:serviceaccount:$(params.DEV_NAMESPACE):pipeline"
+          - name: ENVIRONMENT_NAME
+            value: "DEV"
+
+      - name: verify-frontend-dev-sig
+        taskRef:
+          name: verify-signature
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/frontend:$(params.IMAGE_TAG)"
+          - name: REQUIRED_IDENTITY
+            value: "system:serviceaccount:$(params.DEV_NAMESPACE):pipeline"
+          - name: ENVIRONMENT_NAME
+            value: "DEV"
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 2: ACS DEEP SCAN
+      # ══════════════════════════════════════════════════════════════
+      - name: acs-scan-backend
+        runAfter: [verify-backend-dev-sig]
+        taskRef:
+          name: stackrox-image-scan
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: FAIL_ON_CRITICAL
+            value: "true"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+
+      - name: acs-scan-frontend
+        runAfter: [verify-frontend-dev-sig]
+        taskRef:
+          name: stackrox-image-scan
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/frontend:$(params.IMAGE_TAG)"
+          - name: FAIL_ON_CRITICAL
+            value: "true"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 3: RE-SIGN (Signature #2 — STAGING)
+      # ══════════════════════════════════════════════════════════════
+      - name: sign-backend-staging
+        runAfter: [acs-scan-backend]
+        taskRef:
+          name: sign-rhtas
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: COMPONENT
+            value: "backend"
+          - name: ENVIRONMENT
+            value: "staging"
+          - name: SIGNATURE_NUMBER
+            value: "2"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      - name: sign-frontend-staging
+        runAfter: [acs-scan-frontend]
+        taskRef:
+          name: sign-rhtas
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/frontend:$(params.IMAGE_TAG)"
+          - name: COMPONENT
+            value: "frontend"
+          - name: ENVIRONMENT
+            value: "staging"
+          - name: SIGNATURE_NUMBER
+            value: "2"
+        workspaces:
+          - name: artifacts
+            workspace: artifacts
+          - name: dockerconfig
+            workspace: dockerconfig
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 4: VERIFY PROGRESSIVE CHAIN (2 signatures)
+      # ══════════════════════════════════════════════════════════════
+      - name: verify-backend-multi-sig
+        runAfter: [sign-backend-staging]
+        taskRef:
+          name: verify-multi-sig
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: REQUIRED_SIGNATURES
+            value: "2"
+          - name: ENVIRONMENT_NAME
+            value: "STAGING"
+
+      - name: verify-frontend-multi-sig
+        runAfter: [sign-frontend-staging]
+        taskRef:
+          name: verify-multi-sig
+          kind: ClusterTask
+        params:
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/frontend:$(params.IMAGE_TAG)"
+          - name: REQUIRED_SIGNATURES
+            value: "2"
+          - name: ENVIRONMENT_NAME
+            value: "STAGING"
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 5: DEPLOY STAGING + SMOKE TEST
+      # ══════════════════════════════════════════════════════════════
+      - name: git-clone
+        runAfter: [verify-backend-multi-sig, verify-frontend-multi-sig]
+        taskRef:
+          name: git-clone
+          kind: ClusterTask
+        params:
+          - name: url
+            value: $(params.GIT_REPO)
+          - name: revision
+            value: $(params.GIT_REVISION)
+        workspaces:
+          - name: output
+            workspace: source
+
+      - name: deploy-backend
+        runAfter: [git-clone]
+        taskRef:
+          name: deploy-openshift
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "backend"
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+          - name: REPLICAS
+            value: "2"
+        workspaces:
+          - name: source
+            workspace: source
+
+      - name: deploy-frontend
+        runAfter: [git-clone]
+        taskRef:
+          name: deploy-openshift
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "frontend"
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/frontend:$(params.IMAGE_TAG)"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+          - name: REPLICAS
+            value: "2"
+        workspaces:
+          - name: source
+            workspace: source
+
+      - name: smoke-test-backend
+        runAfter: [deploy-backend]
+        taskRef:
+          name: smoke-test
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "backend"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+
+      - name: smoke-test-frontend
+        runAfter: [deploy-frontend]
+        taskRef:
+          name: smoke-test
+          kind: ClusterTask
+        params:
+          - name: COMPONENT
+            value: "frontend"
+          - name: NAMESPACE
+            value: "$(params.NAMESPACE)"
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 6: GITOPS UPDATE
+      # ══════════════════════════════════════════════════════════════
+      - name: gitops-update-backend
+        runAfter: [smoke-test-backend]
+        taskRef:
+          name: gitops-update
+          kind: ClusterTask
+        params:
+          - name: GITOPS_REPO_URL
+            value: "$(params.GIT_REPO)"
+          - name: COMPONENT
+            value: "backend"
+          - name: IMAGE
+            value: "$(params.REGISTRY)/$(params.DEV_NAMESPACE)/backend:$(params.IMAGE_TAG)"
+          - name: ENVIRONMENT
+            value: "staging"
+        workspaces:
+          - name: gitops-source
+            workspace: gitops-source
+
+    finally:
+      - name: report-status
+        taskSpec:
+          steps:
+            - name: report
+              image: registry.redhat.io/ubi9/ubi-minimal:latest
+              script: |
+                #!/bin/bash
+                echo "════════════════════════════════════════════════════"
+                echo "  STAGING PIPELINE — push to main"
+                echo "  Commit : $(params.GIT_REVISION)"
+                echo "  Status : $(tasks.status)"
+                echo "  Sig #2 (STAGING) created — progressive chain verified"
+                echo "════════════════════════════════════════════════════"
+
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi
+    - name: artifacts
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 512Mi
+    - name: dockerconfig
+      secret:
+        secretName: registry-credentials
+        optional: true
+    - name: gitops-source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 256Mi

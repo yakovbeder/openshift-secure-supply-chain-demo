@@ -1,0 +1,25 @@
+apiVersion: platform.stackrox.io/v1alpha1
+kind: SecuredCluster
+metadata:
+  name: stackrox-secured-cluster-services
+  namespace: stackrox
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  clusterName: local-cluster
+  centralEndpoint: "central.stackrox.svc:443"
+  admissionControl:
+    listenOnCreates: true
+    listenOnUpdates: true
+    listenOnEvents: true
+    contactImageScanners: ScanIfMissing
+    timeoutSeconds: 20
+    bypass: BreakGlassAnnotation
+  perNode:
+    collector:
+      collection: EBPF
+      imageFlavor: Regular
+    taintToleration: TolerateTaints
+  auditLogs:
+    collection: Auto

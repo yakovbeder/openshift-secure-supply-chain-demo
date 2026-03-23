@@ -1,0 +1,102 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# SUPPLY CHAIN POLICY: Dependency Pinning Verification
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Verify all dependencies are pinned to exact versions
+# Mode: warn (requires dependency analysis)
+# Priority: 22
+#
+# Why dependency pinning matters:
+# - Prevents supply chain attacks via dependency confusion
+# - Ensures reproducible builds
+# - Protects against malicious package updates
+# - Enables vulnerability tracking by exact version
+#
+# Floating version patterns to detect:
+# - npm: "^1.0.0", "~1.0.0", "*", "latest"
+# - pip: ">=1.0", "~=1.0", "*"
+# - go: No version specified, "latest"
+# - maven: "[1.0,)", "LATEST", "RELEASE"
+#
+# Acceptable patterns:
+# - Exact versions: "1.2.3", "=1.2.3"
+# - Digest/hash locks: package-lock.json, go.sum
+# - Content-addressable: SHA256 hashes
+#
+# Pipeline integration:
+#   # Analyze package.json for floating versions
+#   FLOATING=$(jq '[.dependencies, .devDependencies | to_entries[] | 
+#     select(.value | test("^[\\^~*]|latest|>=|>"))] | length' package.json)
+#   
+#   echo "{
+#     \"ecosystem\": \"npm\",
+#     \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+#     \"lockfilePresent\": $(test -f package-lock.json && echo true || echo false),
+#     \"floatingDependencies\": ${FLOATING},
+#     \"totalDependencies\": $(jq '[.dependencies, .devDependencies | length] | add' package.json),
+#     \"status\": $([ $FLOATING -eq 0 ] && echo '\"pass\"' || echo '\"fail\"')
+#   }" > dependency-pinning.json
+#   
+#   cosign attest --type https://example.com/dependency-pinning/v1 --predicate dependency-pinning.json ${IMAGE}
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-dependency-pinning
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: supply-chain
+  annotations:
+    description: "Verify all dependencies are pinned to exact versions"
+    category: "supply-chain-dependencies"
+    priority: "22"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: dependency-pinning
+          predicateType: https://example.com/dependency-pinning/v1
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://example.com/dependency-pinning/v1"
+              
+              predicate: {
+                ecosystem: string
+                timestamp?: string
+                lockfilePresent: bool
+                floatingDependencies: number
+                totalDependencies: number
+                status: "pass" | "fail" | "warning"
+                
+                unpinnedList?: [...string]
+                
+                // Require lockfile to be present
+                if !lockfilePresent {
+                  _fail: "No lockfile found - dependencies not reproducible"
+                }
+                
+                // No floating dependencies allowed
+                if floatingDependencies > 0 {
+                  _fail: "\(floatingDependencies) floating dependencies detected"
+                }
+                
+                // Overall status must pass
+                if status != "pass" {
+                  _fail: "Dependency pinning check failed"
+                }
+              }
+  mode: warn
+
+

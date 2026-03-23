@@ -1,0 +1,46 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# ML POLICY: Require Model Card Attestation
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Warn if ML models lack model card attestation (governance)
+# Mode: warn
+# Priority: 53
+#
+# Model cards document: accuracy metrics, bias evaluations, training data,
+# intended use, and limitations — required for ML governance.
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-model-card-attestation
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: ml-governance
+  annotations:
+    description: "Warn if ML models lack model card attestation"
+    category: "ml-governance"
+    priority: "53"
+spec:
+  images:
+    - glob: "image-registry.openshift-image-registry.svc:5000/*/ml-models/*"
+    - glob: "default-route-openshift-image-registry.*/*/ml-models/*"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: "https://kubernetes.default.svc"
+            subjectRegExp: "system:serviceaccount:ml-model-.*:.*"
+          - issuer: "https://gitlab.__CLUSTER_DOMAIN__"
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: model-card
+          predicateType: "https://mlops.rhtas.dev/model-card/v1"
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://mlops.rhtas.dev/model-card/v1"
+  mode: warn

@@ -1,0 +1,115 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# OPERATIONAL POLICY: Operational Readiness Attestation
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Require operational metadata for production readiness
+# Mode: warn (requires ops metadata in build)
+# Priority: 27
+#
+# This policy ensures services have:
+# - Defined SLOs (Service Level Objectives)
+# - Runbook/playbook documentation links
+# - On-call contact information
+# - Monitoring and alerting configured
+# - Disaster recovery procedures documented
+#
+# Operational readiness checklist:
+# ✓ Health check endpoints defined
+# ✓ Metrics exposed (Prometheus format)
+# ✓ Logging standards followed
+# ✓ Resource limits set
+# ✓ Backup/restore procedures documented
+# ✓ Incident response runbook available
+#
+# Required metadata:
+# - owner: Team/individual responsible
+# - runbookUrl: Link to operational runbook
+# - slackChannel: Incident notification channel
+# - pagerDutyService: On-call escalation
+# - sloAvailability: Target availability percentage
+# - sloLatencyP99: P99 latency target in ms
+#
+# Pipeline integration:
+#   # ops-metadata.json in repo root
+#   cat ops-metadata.json
+#   {
+#     "owner": "platform-team",
+#     "runbookUrl": "https://docs.example.com/runbooks/secure-app",
+#     "slackChannel": "#secure-app-incidents",
+#     "pagerDutyService": "secure-app-prod",
+#     "sloAvailability": 99.9,
+#     "sloLatencyP99": 200,
+#     "healthCheckPath": "/api/health",
+#     "metricsPath": "/metrics"
+#   }
+#   
+#   cosign attest --type https://example.com/operational-readiness/v1 \
+#     --predicate ops-metadata.json ${IMAGE}
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-operational-readiness
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: operational
+  annotations:
+    description: "Require operational readiness metadata for production"
+    category: "operational-readiness"
+    priority: "27"
+spec:
+  images:
+    - glob: default-route-openshift-image-registry.*/secure-app/*:prod-*
+    - glob: default-route-openshift-image-registry.*/secure-app/*:v*
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://gitlab.__CLUSTER_DOMAIN__
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*secure-app.*"
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+      attestations:
+        - name: operational-readiness
+          predicateType: https://example.com/operational-readiness/v1
+          policy:
+            type: cue
+            data: |
+              predicateType: "https://example.com/operational-readiness/v1"
+              
+              predicate: {
+                // Required ownership
+                owner: string & !=""
+                
+                // Required documentation
+                runbookUrl: string & =~"^https?://"
+                
+                // Required incident response
+                slackChannel?: string
+                pagerDutyService?: string
+                emailContact?: string
+                
+                // At least one contact method required
+                _hasContact: slackChannel != _|_ || pagerDutyService != _|_ || emailContact != _|_
+                if !_hasContact {
+                  _fail: "At least one contact method required (slackChannel, pagerDutyService, or emailContact)"
+                }
+                
+                // Required SLOs
+                sloAvailability: number & >=99.0 & <=100.0
+                sloLatencyP99?: number
+                
+                // Required health endpoints
+                healthCheckPath: string & =~"^/"
+                metricsPath?: string
+                
+                // Validate SLO is reasonable
+                if sloAvailability < 99.0 {
+                  _fail: "SLO availability must be at least 99.0%"
+                }
+              }
+  mode: warn
+

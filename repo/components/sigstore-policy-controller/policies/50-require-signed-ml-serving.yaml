@@ -1,0 +1,43 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# ML POLICY: Require Signed ML Serving Images
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose: Require ML model serving images and model OCI artifacts
+#          to be signed by authorized pipeline identities
+# Mode: enforce
+# Priority: 50
+#
+# Covers both container images (*-server) and model OCI artifacts (ml-models/*)
+#
+# ════════════════════════════════════════════════════════════════════════════════
+
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-signed-ml-serving
+  labels:
+    app.kubernetes.io/part-of: rhtas-demo
+    policy-category: ml-signing
+  annotations:
+    description: "Require ML serving images and model artifacts to be signed"
+    category: "ml-signing"
+    priority: "50"
+spec:
+  images:
+    - glob: "image-registry.openshift-image-registry.svc:5000/*/ml-models/*"
+    - glob: "image-registry.openshift-image-registry.svc:5000/*/*-server:*"
+    - glob: "default-route-openshift-image-registry.*/*-server:*"
+    - glob: "default-route-openshift-image-registry.*/*/ml-models/*"
+  authorities:
+    - keyless:
+        identities:
+          - issuer: "https://kubernetes.default.svc"
+            subjectRegExp: "system:serviceaccount:ml-model-.*:ml-pipeline-signer"
+          - issuer: "https://kubernetes.default.svc"
+            subjectRegExp: "system:serviceaccount:ml-model-.*:pipeline"
+          - issuer: "https://gitlab.__CLUSTER_DOMAIN__"
+            subjectRegExp: ".*"
+          - issuer: https://jenkins.__CLUSTER_DOMAIN__/oidc
+            subjectRegExp: ".*"
+        trustRootRef: rhtas-trust
+  mode: enforce

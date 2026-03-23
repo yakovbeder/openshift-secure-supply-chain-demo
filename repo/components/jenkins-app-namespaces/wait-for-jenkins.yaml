@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: wait-for-jenkins
+  namespace: jenkins
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: wait
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Jenkins to be ready..."
+              for i in $(seq 1 120); do
+                if wget -q -O- --timeout=5 http://jenkins.jenkins.svc:8080/login 2>/dev/null | grep -qi jenkins; then
+                  echo "Jenkins is ready."
+                  exit 0
+                fi
+                echo "  Attempt ${i}/120..."
+                sleep 5
+              done
+              echo "WARN: Jenkins not ready after 10 min — proceeding anyway."

@@ -1,0 +1,20 @@
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: gitlab-operator-group
+  namespace: gitlab-system
+spec:
+  targetNamespaces:
+    - gitlab-system
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: gitlab-operator-kubernetes
+  namespace: gitlab-system
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: gitlab-operator-kubernetes
+  source: community-operators
+  sourceNamespace: openshift-marketplace

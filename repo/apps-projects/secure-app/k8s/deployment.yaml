@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-app-backend
+  namespace: secure-app
+  labels:
+    app: secure-app
+    component: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: secure-app
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: secure-app
+        component: backend
+    spec:
+      containers:
+        - name: backend
+          image: image-registry.openshift-image-registry.svc:5000/secure-app/backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-app-frontend
+  namespace: secure-app
+  labels:
+    app: secure-app
+    component: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: secure-app
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: secure-app
+        component: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: image-registry.openshift-image-registry.svc:5000/secure-app/frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "25m"
+            limits:
+              memory: "64Mi"
+              cpu: "50m"
+
