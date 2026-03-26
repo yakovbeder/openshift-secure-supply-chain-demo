@@ -215,6 +215,11 @@ oc patch configmap argocd-cm -n "${ARGOCD_NS}" --type merge -p '{
   }
 }' 2>/dev/null || true
 
+oc patch argocd openshift-gitops -n "${ARGOCD_NS}" --type merge \
+    -p '{"spec":{"kustomizeBuildOptions":"--enable-helm"}}' 2>/dev/null || \
+oc patch configmap argocd-cm -n "${ARGOCD_NS}" --type merge \
+    -p '{"data":{"kustomize.buildOptions":"--enable-helm"}}' 2>/dev/null || true
+
 oc patch configmap argocd-cmd-params-cm -n "${ARGOCD_NS}" --type merge -p '{
   "data": {
     "controller.status.processors": "50",
@@ -230,7 +235,7 @@ oc patch configmap argocd-rbac-cm -n "${ARGOCD_NS}" --type merge -p '{
     "scopes": "[groups, preferred_username]"
   }
 }' 2>/dev/null || true
-log_ok "ArgoCD tuned (30s poll, PVC health, 50/25 processors, RBAC for admin user)"
+log_ok "ArgoCD tuned (30s poll, PVC health, 50/25 processors, RBAC, --enable-helm)"
 
 if oc get validatingwebhookconfiguration namespace.operator.tekton.dev &>/dev/null 2>&1; then
     oc patch validatingwebhookconfiguration namespace.operator.tekton.dev \

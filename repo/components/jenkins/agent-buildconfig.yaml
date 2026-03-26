@@ -51,10 +51,14 @@ spec:
         kind: ImageStreamTag
         namespace: openshift
         name: "jenkins-agent-base:latest"
-      noCache: false
   output:
     to:
       kind: ImageStreamTag
       name: "jenkins-agent-supply-chain:latest"
+  successfulBuildsHistoryLimit: 5
+  failedBuildsHistoryLimit: 5
+  resources: {}
+  postCommit: {}
+  nodeSelector: null
   triggers:
     - type: ConfigChange

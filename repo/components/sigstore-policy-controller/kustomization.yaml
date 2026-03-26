@@ -121,3 +121,22 @@ labels:
   - pairs:
       app.kubernetes.io/part-of: rhtas-demo
       app.kubernetes.io/component: sigstore-policy-controller
+
+# Sync-wave ordering: PolicyController (wave 1) must create the webhook service
+# before ClusterImagePolicy and TrustRoot resources (wave 3) can be applied,
+# since they use a conversion webhook at webhook.policy-controller-operator.svc.
+patches:
+  - target:
+      group: policy.sigstore.dev
+      kind: ClusterImagePolicy
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "3"
+  - target:
+      group: policy.sigstore.dev
+      kind: TrustRoot
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "2"
