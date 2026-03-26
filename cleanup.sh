@@ -48,9 +48,9 @@ fi
 
 ARGOCD_NS="openshift-gitops"
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 # 1. Delete ApplicationSet (this cascades and deletes all ArgoCD Applications)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}${CYAN}━━━ Step 1: ApplicationSet + ArgoCD Applications ━━━${NC}"
 
@@ -70,9 +70,9 @@ done
 echo -e "${GREEN}[OK]${NC} ArgoCD applications cleaned"
 sleep 5
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 # 2. Delete component namespaces
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}${CYAN}━━━ Step 2: Component namespaces ━━━${NC}"
 
@@ -83,6 +83,7 @@ NAMESPACES=(
     stackrox
     trusted-artifact-signer
     cosign-system
+    policy-controller-operator
     quay
     mysql
     secure-app-dev
@@ -98,9 +99,9 @@ done
 
 echo -e "${GREEN}[OK]${NC} Namespace deletion initiated"
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 # 3. Delete cluster-scoped resources
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}${CYAN}━━━ Step 3: Cluster-scoped resources ━━━${NC}"
 
@@ -132,13 +133,16 @@ remove_cr() {
 remove_cr securesigns.rhtas.redhat.com "SecureSign"
 remove_cr centrals.platform.stackrox.io "Central"
 remove_cr securedclusters.platform.stackrox.io "SecuredCluster"
+remove_cr quayregistries.quay.redhat.com "QuayRegistry"
+remove_cr gitlabs.apps.gitlab.com "GitLab"
+remove_cr policycontrollers.rhtas.charts.redhat.com "PolicyController"
 remove_cr argocds.argoproj.io "ArgoCD"
 
 echo -e "${GREEN}[OK]${NC} Cluster-scoped resources cleaned"
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 # 4. Delete operator subscriptions + CSVs
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}${CYAN}━━━ Step 4: Operators ━━━${NC}"
 
@@ -168,7 +172,7 @@ done
 # Sweep any orphaned CSVs from openshift-operators (subscriptions may already be gone)
 for csv in $(oc get csv -n openshift-operators --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null || true); do
     case "$csv" in
-        rhtas-operator*|rhacs-operator*|quay-operator*|openshift-gitops-operator*|gitea-operator*|gitlab-operator*)
+        rhtas-operator*|rhacs-operator*|quay-operator*|openshift-gitops-operator*|gitea-operator*|gitlab-operator*|policy-controller-operator*)
             del "oc delete csv ${csv} -n openshift-operators" "Orphaned CSV: ${csv}"
             ;;
     esac
@@ -180,9 +184,9 @@ del "oc delete catalogsource rhpds-gitea-catalog -n openshift-marketplace" \
 
 echo -e "${GREEN}[OK]${NC} Operators cleaned"
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 # 5. Delete ArgoCD namespace (last, so ArgoCD doesn't recreate anything)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}${CYAN}━━━ Step 5: OpenShift GitOps ━━━${NC}"
 
@@ -192,9 +196,9 @@ fi
 
 echo -e "${GREEN}[OK]${NC} GitOps cleanup initiated"
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 # 6. Wait for namespace termination
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}${CYAN}━━━ Step 6: Waiting for namespaces to terminate ━━━${NC}"
 echo -e "${YELLOW}  This can take 5-10 minutes (PVCs, finalizers, operator hooks)${NC}"
@@ -221,21 +225,27 @@ done
 for ns in "${ALL_NS[@]}"; do
     if oc get namespace "$ns" &>/dev/null 2>&1; then
         echo -e "${YELLOW}[WARN]${NC} Force-removing stuck namespace: $ns"
-        # Clear finalizers on resources blocking namespace deletion
-        for resource_type in securesigns.rhtas.redhat.com centrals.platform.stackrox.io securedclusters.platform.stackrox.io; do
+        for resource_type in \
+            securesigns.rhtas.redhat.com \
+            centrals.platform.stackrox.io \
+            securedclusters.platform.stackrox.io \
+            quayregistries.quay.redhat.com \
+            gitlabs.apps.gitlab.com \
+            policycontrollers.rhtas.charts.redhat.com \
+            argocds.argoproj.io; do
             for res in $(oc get "$resource_type" -n "$ns" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null || true); do
                 oc patch "$resource_type" "$res" -n "$ns" --type merge -p '{"metadata":{"finalizers":null}}' 2>/dev/null || true
             done
         done
         oc get namespace "$ns" -o json \
-            | jq '.spec.finalizers = []' \
+            | python3 -c 'import sys,json; ns=json.load(sys.stdin); ns["spec"]["finalizers"]=[]; print(json.dumps(ns))' \
             | oc replace --raw "/api/v1/namespaces/${ns}/finalize" -f - 2>/dev/null || true
     fi
 done
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 # Done
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}${GREEN}║               CLEANUP COMPLETE                                ║${NC}"
