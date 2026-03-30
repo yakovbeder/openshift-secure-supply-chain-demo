@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi8/nodejs-18-minimal:latest
+FROM registry.access.redhat.com/ubi8/nodejs-18-minimal:1-145
 
 USER 0
 WORKDIR /app

@@ -1,10 +1,15 @@
+# OpenShift provides this base image through a cluster-managed ImageStreamTag named latest.
+# hadolint ignore=DL3007
 FROM image-registry.openshift-image-registry.svc:5000/openshift/jenkins-agent-base:latest
 
 USER root
 
 ARG RHTAS_CLI_SERVER="https://cli-server-trusted-artifact-signer.apps.__CLUSTER_DOMAIN__"
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # npm (jq, python3, openssl, git, oc already in base image)
+# npm comes from the subscribed RHEL repos in the cluster image, so pinning an RPM release here is brittle.
+# hadolint ignore=DL3041
 RUN dnf install -y --nodocs --nobest --skip-broken npm 2>/dev/null; \
     dnf clean all && rm -rf /var/cache/dnf
 
