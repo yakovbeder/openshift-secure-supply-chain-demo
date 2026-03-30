@@ -1,0 +1,28 @@
+# Relaxed rules for Kubernetes / OpenShift YAML and GitHub Actions workflows.
+extends: default
+
+rules:
+  braces: enable
+  brackets: enable
+  colons: enable
+  commas: enable
+  comments: enable
+  comments-indentation: disable
+  document-end: disable
+  document-start: disable
+  # Many manifests have intentional blank blocks; repo also has legacy spacing.
+  empty-lines: disable
+  empty-values: disable
+  float-values: disable
+  hyphens: enable
+  indentation: enable
+  # Some policy templates repeat keys under keyless identities (needs upstream cleanup).
+  key-duplicates: disable
+  key-ordering: disable
+  line-length: disable
+  new-line-at-end-of-file: enable
+  new-lines: enable
+  octal-values: disable
+  quoted-strings: disable
+  trailing-spaces: disable
+  truthy: disable

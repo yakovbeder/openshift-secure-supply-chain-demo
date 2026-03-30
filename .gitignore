@@ -16,6 +16,9 @@
 # Temp files from domain replacement
 *.bak
 
+# Helm chart cache (kustomize --enable-helm)
+repo/components/sealed-secrets/charts/
+
 # Git repos created inside repo/ during spin-demo.sh
 repo/.git/
 repo/apps-projects/secure-app/.git/

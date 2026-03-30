@@ -1,0 +1,122 @@
+# CI: static checks for shell, YAML, Kubernetes manifests, kustomize, Dockerfiles, Markdown.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: koalaman/shellcheck-action@v2
+        with:
+          scandir: "."
+          ignore_paths: "repo/**"
+
+  yamllint:
+    name: yamllint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: pip install --user yamllint
+
+      - name: Run yamllint
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          yamllint -c .yamllint.yml .
+
+  kubeconform:
+    name: kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        env:
+          KUBECONFORM_VERSION: v0.6.7
+        run: |
+          set -euo pipefail
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate manifests under repo/
+        run: |
+          set -euo pipefail
+          kubeconform -ignore-missing-schemas -summary -output tap repo/
+
+  kustomize-build:
+    name: kustomize build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: v5.5.0
+
+      - name: Build all kustomization overlays
+        run: |
+          set -euo pipefail
+          dirs=(
+            repo/components/acs
+            repo/components/gitea
+            repo/components/gitlab
+            repo/components/jenkins
+            repo/components/jenkins-app-namespaces
+            repo/components/mysql
+            repo/components/quay
+            repo/components/rhtas-operator
+            repo/components/rhtas-securesign
+            repo/components/sealed-secrets
+            repo/components/sigstore-policy-controller
+            repo/apps-projects/secure-app/k8s
+          )
+          for d in "${dirs[@]}"; do
+            echo "==> kustomize build --enable-helm $d"
+            # --enable-helm required for repo/components/sealed-secrets (HelmChart inflation)
+            kustomize build --enable-helm "$d" >/dev/null
+          done
+
+  hadolint:
+    name: Hadolint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: repo/components/jenkins/agent-image/Dockerfile
+
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: repo/apps-projects/secure-app/frontend/Dockerfile
+
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: repo/apps-projects/secure-app/backend/Dockerfile
+
+  markdownlint:
+    name: markdownlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          config: .markdownlint-cli2.jsonc
+          globs: |
+            **/*.md

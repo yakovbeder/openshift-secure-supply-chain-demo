@@ -89,7 +89,7 @@ log_err()     { echo -e "${RED}[ERROR]${NC} $1"; }
 spin_wait() {
     local timeout=$1 check_cmd=$2 msg=$3 interval=${4:-5}
     local elapsed=0 spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    while [ $elapsed -lt $timeout ]; do
+    while [ "$elapsed" -lt "$timeout" ]; do
         if eval "$check_cmd" &>/dev/null; then
             printf "\r${GREEN}[OK]${NC} %s  \n" "$msg"
             progress_bar "$CURRENT_STEP"
